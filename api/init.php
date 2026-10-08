@@ -27,7 +27,7 @@ try {
     $response['prefixes'] = $stmt->fetchAll();
 
     // Fetch Documents
-    $stmt = $pdo->query("SELECT ID, Filename, FolderId, PaymentDate, ExpiryDate, Status, FileId, CustomData, CreatedAt FROM documents ORDER BY CreatedAt DESC");
+    $stmt = $pdo->query("SELECT ID, Filename, FolderId, PaymentDate, ExpiryDate, Status, FileId, CustomData, CreatedAt FROM documents ORDER BY CreatedAt DESC LIMIT 1000");
     $docs = $stmt->fetchAll();
     
     // Parse JSON for CustomData
