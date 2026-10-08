@@ -1,4 +1,5 @@
 <?php
+date_default_timezone_set('Asia/Bangkok');
 $host = 'localhost';
 $dbname = 'dms_system';
 $username = 'root';

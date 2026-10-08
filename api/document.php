@@ -139,7 +139,7 @@ try {
             $stmt = $pdo->prepare("SELECT * FROM documents WHERE ID = ?");
             $stmt->execute([$docId]);
             $updatedDoc = $stmt->fetch();
-            $updatedDoc['CustomData'] = json_decode($updatedDoc['CustomData'], true);
+            $updatedDoc['CustomData'] = json_decode($updatedDoc['CustomData'] ?: '{}', true);
 
             echo json_encode(['success' => true, 'updatedDoc' => $updatedDoc]);
             break;
