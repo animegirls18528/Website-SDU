@@ -30,9 +30,12 @@ function findUser($pdo, $id) {
 try {
     switch ($action) {
         case 'list':
-            $users = $pdo->query("SELECT ID, Username, Role, locked_until, CreatedAt FROM users ORDER BY ID")->fetchAll();
+            $users = $pdo->query("SELECT ID, Username, Role, FolderScope, locked_until, CreatedAt FROM users ORDER BY ID")->fetchAll();
+            $perms = [];
+            foreach ($pdo->query("SELECT UserID, FolderID FROM folder_permissions") as $p) $perms[(int)$p['UserID']][] = (int)$p['FolderID'];
             foreach ($users as &$u) {
                 $u['ID'] = (int)$u['ID'];
+                $u['FolderIds'] = $perms[$u['ID']] ?? [];
                 $u['Locked'] = $u['locked_until'] && strtotime($u['locked_until']) > time();
                 unset($u['locked_until']);
             }
@@ -69,6 +72,22 @@ try {
             $pdo->prepare("UPDATE users SET Role = ? WHERE ID = ?")->execute([$role, $user['ID']]);
             if ((int)$user['ID'] === $me) $_SESSION['role'] = $role;
             addAuditLog($pdo, $me, 'Update User', "Changed role of {$user['Username']} to $role");
+            echo json_encode(['success' => true]);
+            break;
+
+        case 'setFolderScope':
+            $user = findUser($pdo, (int)($input['ID'] ?? 0));
+            $scope = ($input['FolderScope'] ?? 'all') === 'restricted' ? 'restricted' : 'all';
+            $folderIds = array_values(array_unique(array_map('intval', (array)($input['FolderIds'] ?? []))));
+            $pdo->beginTransaction();
+            $pdo->prepare("UPDATE users SET FolderScope = ? WHERE ID = ?")->execute([$scope, $user['ID']]);
+            $pdo->prepare("DELETE FROM folder_permissions WHERE UserID = ?")->execute([$user['ID']]);
+            $ins = $pdo->prepare("INSERT IGNORE INTO folder_permissions (UserID, FolderID) SELECT ?, ID FROM folders WHERE ID = ?");
+            foreach ($folderIds as $fid) $ins->execute([$user['ID'], $fid]);
+            $pdo->commit();
+            addAuditLog($pdo, $me, 'Update User', $scope === 'all'
+                ? "{$user['Username']}: access to all folders"
+                : "{$user['Username']}: access limited to " . count($folderIds) . " folder(s)");
             echo json_encode(['success' => true]);
             break;
 

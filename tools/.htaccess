@@ -1,0 +1,2 @@
+# Command-line tools only; never served over HTTP.
+Require all denied

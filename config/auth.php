@@ -2,7 +2,7 @@
 // Shared session / authorization helpers. Include this instead of calling session_start() directly.
 
 const SESSION_IDLE_TIMEOUT = 8 * 60 * 60; // 8 hours
-const ROLES = ['admin', 'staff'];
+const ROLES = ['admin', 'staff', 'viewer']; // viewer = read-only
 
 function startSecureSession() {
     if (session_status() === PHP_SESSION_ACTIVE) return;
@@ -23,8 +23,32 @@ function startSecureSession() {
             session_start();
         } else {
             $_SESSION['last_activity'] = time();
+            refreshSessionUser();
         }
     }
+}
+
+/**
+ * Re-read the user's role on every request so that demoting or deleting a user takes effect immediately,
+ * not only after they log out.
+ */
+function refreshSessionUser() {
+    global $pdo;
+    if (!isset($pdo)) {
+        require_once __DIR__ . '/database.php'; // assigns the global $pdo (declared global above)
+    }
+    $stmt = $pdo->prepare("SELECT Username, Role FROM users WHERE ID = ?");
+    $stmt->execute([(int)$_SESSION['user_id']]);
+    $user = $stmt->fetch();
+    if (!$user) {
+        // Account was deleted: end the session
+        $_SESSION = [];
+        session_destroy();
+        session_start();
+        return;
+    }
+    $_SESSION['username'] = $user['Username'];
+    $_SESSION['role'] = $user['Role'];
 }
 
 function csrfToken() {
@@ -56,6 +80,18 @@ function requireLogin() {
         if (!is_string($sent) || !hash_equals(csrfToken(), $sent)) {
             jsonFail(403, 'โทเค็นความปลอดภัยไม่ถูกต้อง กรุณารีเฟรชหน้าเว็บ');
         }
+    }
+}
+
+// Staff and admins may add or change documents; viewers are read-only.
+function canEdit() {
+    return in_array($_SESSION['role'] ?? '', ['admin', 'staff'], true);
+}
+
+function requireEditor() {
+    requireLogin();
+    if (!canEdit()) {
+        jsonFail(403, 'บัญชีนี้มีสิทธิ์ดูเอกสารเท่านั้น');
     }
 }
 

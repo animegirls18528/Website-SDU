@@ -14,6 +14,11 @@ try {
     // Force UTF-8 encoding
     $pdo->exec("SET NAMES utf8mb4");
 } catch(PDOException $e) {
-    die("Database connection failed: " . $e->getMessage());
+    error_log("Database connection failed: " . $e->getMessage());
+    http_response_code(500);
+    die("Database connection failed");
 }
+
+require_once __DIR__ . '/migrate.php';
+edmsMigrate($pdo);
 ?>

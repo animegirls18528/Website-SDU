@@ -3,65 +3,9 @@ require_once '../config/auth.php';
 requireLogin();
 require_once '../config/database.php';
 require_once '../config/helpers.php';
+require_once '../config/storage.php';
+require_once '../config/search.php';
 require_once '../vendor/autoload.php';
-
-use setasign\Fpdi\Fpdi;
-use chillerlan\QRCode\QRCode;
-use chillerlan\QRCode\QROptions;
-
-function stampQRCodeOnPdf($filepath, $docId) {
-    if (!file_exists($filepath)) return;
-    if (strtolower(pathinfo($filepath, PATHINFO_EXTENSION)) !== 'pdf') return;
-
-    $baseUri = "http://" . $_SERVER['HTTP_HOST'] . str_replace('\\', '/', dirname(dirname($_SERVER['PHP_SELF'])));
-    $qrUrl = $baseUri . "/verify.php?id=" . urlencode($docId);
-    
-    $options = new QROptions([
-        'version'    => 5,
-        'outputType' => QRCode::OUTPUT_IMAGE_PNG,
-        'eccLevel'   => QRCode::ECC_L,
-        'scale'      => 5,
-    ]);
-    
-    $qrImage = (new QRCode($options))->render($qrUrl);
-    
-    $tmpQr = tempnam(sys_get_temp_dir(), 'qr_') . '.png';
-    file_put_contents($tmpQr, base64_decode(explode(',', $qrImage)[1]));
-
-    try {
-        $pdf = new Fpdi();
-        $pageCount = $pdf->setSourceFile($filepath);
-        for ($pageNo = 1; $pageNo <= $pageCount; $pageNo++) {
-            $templateId = $pdf->importPage($pageNo);
-            $size = $pdf->getTemplateSize($templateId);
-            
-            if ($size['width'] > $size['height']) {
-                $pdf->AddPage('L', [$size['width'], $size['height']]);
-            } else {
-                $pdf->AddPage('P', [$size['width'], $size['height']]);
-            }
-            
-            $pdf->useTemplate($templateId);
-            
-            $qrSize = 25; 
-            $x = $size['width'] - $qrSize - 10; 
-            $y = $size['height'] - $qrSize - 10; 
-            
-            $pdf->Image($tmpQr, $x, $y, $qrSize, $qrSize, 'PNG');
-            
-            $pdf->SetFont('Arial', '', 8);
-            $pdf->SetTextColor(100, 100, 100);
-            $pdf->SetXY($x, $y + $qrSize + 1);
-            $pdf->Cell($qrSize, 4, $docId, 0, 0, 'C');
-        }
-        $pdf->Output($filepath, 'F');
-    } catch (Exception $e) {
-        error_log("Failed to stamp PDF: " . $e->getMessage());
-    }
-    
-    @unlink($tmpQr);
-}
-
 
 header('Content-Type: application/json');
 
@@ -69,134 +13,323 @@ $input = json_decode(file_get_contents('php://input'), true);
 if (!$input && isset($_POST['action'])) {
     $input = $_POST;
 }
-
+$input = $input ?: [];
 $action = $input['action'] ?? '';
+$me = (int)$_SESSION['user_id'];
+
+const WORKFLOW_LABELS = ['Draft' => 'ฉบับร่าง', 'PendingReview' => 'รอตรวจสอบ', 'Approved' => 'อนุมัติแล้ว'];
+
+/** Load a document the current user may access, or fail. */
+function loadDoc($pdo, $id, $allowDeleted = false) {
+    $stmt = $pdo->prepare("SELECT * FROM documents WHERE ID = ?");
+    $stmt->execute([(string)$id]);
+    $doc = $stmt->fetch();
+    if (!$doc || !canAccessFolder($pdo, $doc['FolderId'])) jsonFail(404, 'ไม่พบเอกสาร หรือไม่มีสิทธิ์เข้าถึงแฟ้มนี้');
+    if ($doc['DeletedAt'] && !$allowDeleted) jsonFail(400, 'เอกสารนี้อยู่ในถังขยะ');
+    return $doc;
+}
+
+function publicDoc($pdo, $id) {
+    $stmt = $pdo->prepare("SELECT d.ID, d.Filename, d.FolderId, COALESCE(f.FolderName, '') AS FolderName, d.PaymentDate, d.ExpiryDate,
+                                  CASE WHEN d.ExpiryDate < CURDATE() THEN 'Expired' ELSE 'Active' END AS Status,
+                                  d.WorkflowStatus, d.Tags, d.CustomData, d.CreatedAt, d.UpdatedAt, d.DeletedAt, d.DeleteReason,
+                                  d.DestructionRequestedAt, d.DestructionReason, d.VerifyToken, d.RowVersion,
+                                  (d.OcrText IS NOT NULL) AS HasText, CHAR_LENGTH(d.OcrText) AS TextLength,
+                                  cu.Username AS CreatedByName, du.Username AS DestructionRequestedByName
+                           FROM documents d
+                           LEFT JOIN folders f ON f.ID = d.FolderId
+                           LEFT JOIN users cu ON cu.ID = d.CreatedBy
+                           LEFT JOIN users du ON du.ID = d.DestructionRequestedBy
+                           WHERE d.ID = ?");
+    $stmt->execute([$id]);
+    $doc = $stmt->fetch();
+    $doc['CustomData'] = json_decode($doc['CustomData'] ?: '{}', true) ?: new stdClass();
+    $doc['HasText'] = (bool)$doc['HasText'];
+    $doc['Files'] = documentFiles($pdo, $id);
+    $doc['HasFiles'] = count($doc['Files']) > 0;
+    return $doc;
+}
+
+/** Validated list of staged files from a comma-separated or array value. */
+function stagedFilesFrom($value) {
+    $refs = is_array($value) ? $value : explode(',', (string)$value);
+    $rels = [];
+    foreach ($refs as $ref) {
+        if (trim($ref) === '') continue;
+        $rel = normalizeFileRef($ref);
+        if (!$rel || !isStaged($rel)) jsonFail(400, 'ไฟล์แนบไม่ถูกต้องหรือหมดอายุ กรุณาอัปโหลดใหม่');
+        $rels[] = $rel;
+    }
+    return $rels;
+}
+
+function cleanTags($tags) {
+    $list = is_array($tags) ? $tags : preg_split('/[,\n]+/u', (string)$tags);
+    $list = array_values(array_unique(array_filter(array_map(fn($t) => mb_substr(trim($t), 0, 40), $list), 'strlen')));
+    return $list ? mb_substr(implode(', ', $list), 0, 500) : null;
+}
+
+/** Payment date + retention years. 29 Feb lands on 28 Feb in non-leap years instead of rolling into March. */
+function expiryFor($pdo, $docId, $paymentDate) {
+    if (!$paymentDate) return null;
+    [$y, $m, $d] = array_map('intval', explode('-', $paymentDate));
+    $y += retentionYearsFor($pdo, $docId);
+    $d = min($d, (int)date('t', mktime(0, 0, 0, $m, 1, $y)));
+    return sprintf('%04d-%02d-%02d', $y, $m, $d);
+}
+
+/** null for empty input, 'YYYY-MM-DD' for a real calendar date, otherwise fail with 400. */
+function validDate($value) {
+    $value = trim((string)$value);
+    if ($value === '') return null;
+    if (!preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $value, $m) || !checkdate((int)$m[2], (int)$m[3], (int)$m[1])
+        || (int)$m[1] < 1900 || (int)$m[1] > 2200) {
+        jsonFail(400, 'วันที่จ่ายเงินไม่ถูกต้อง');
+    }
+    return $value;
+}
+
+function requireFolderExists($pdo, $folderId) {
+    if ($folderId === null) return;
+    $stmt = $pdo->prepare("SELECT 1 FROM folders WHERE ID = ?");
+    $stmt->execute([$folderId]);
+    if (!$stmt->fetchColumn()) jsonFail(400, 'ไม่พบแฟ้มจัดเก็บที่เลือก กรุณาโหลดหน้าใหม่');
+}
+
+// IDs go into CODE128 barcodes and the label under the QR code, so only ASCII is allowed
+const DOC_ID_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9._\/-]{0,99}$/';
+const DOC_ID_MESSAGE = 'รหัสเอกสารใช้ได้เฉพาะ A-Z, 0-9 และ . _ / - (ไม่เกิน 100 ตัว) เพื่อให้พิมพ์บาร์โค้ดได้';
 
 try {
     switch ($action) {
-        case 'createDocument':
-        case 'updateDocumentMetadata':
-            // Logic for inserting or updating a document
-            $docId = $input['ID'] ?? $input['newId']; // newId when updating ID
-            $oldId = $input['oldId'] ?? $docId;
-            $filename = $input['Filename'];
-            $folderId = $input['FolderId'] ?? null;
-            $paymentDate = $input['PaymentDate'] ?: null;
-            
-            // Calculate ExpiryDate (10 years)
-            $expiryDate = null;
-            if ($paymentDate) {
-                $expiryDate = date('Y-m-d', strtotime('+10 years', strtotime($paymentDate)));
-            }
-            $status = 'Active';
-            if ($expiryDate && strtotime($expiryDate) < time()) {
-                $status = 'Expired';
-            }
-
-            $customData = isset($input['CustomData']) ? json_encode($input['CustomData']) : '{}';
-            
-            // Handle file merging/updating
-            $fileId = '';
-            if (isset($input['newFileId']) && $input['newFileId']) {
-                if (isset($input['appendFiles']) && $input['appendFiles'] === true) {
-                    $fileId = $input['oldFileId'] ? $input['oldFileId'] . ',' . $input['newFileId'] : $input['newFileId'];
-                } else {
-                    // overwrite
-                    $fileId = $input['newFileId'];
-                    // TODO: Could delete old file from server here
-                }
-            } else {
-                $fileId = $input['oldFileId'] ?? '';
-            }
-
-            // Check if exists
-            $stmt = $pdo->prepare("SELECT ID FROM documents WHERE ID = ?");
-            $stmt->execute([$oldId]);
-            $exists = $stmt->fetch();
-
-            if ($exists) {
-                // Update
-                $stmt = $pdo->prepare("UPDATE documents SET ID=?, Filename=?, FolderId=COALESCE(?, FolderId), PaymentDate=?, ExpiryDate=?, Status=?, FileId=?, CustomData=? WHERE ID=?");
-                $stmt->execute([$docId, $filename, $folderId, $paymentDate, $expiryDate, $status, $fileId, $customData, $oldId]);
-                addAuditLog($pdo, $_SESSION['user_id'] ?? null, "Update Document", "Updated document ID: $oldId to $docId, Name: $filename");
-            } else {
-                // Insert
-                $stmt = $pdo->prepare("INSERT INTO documents (ID, Filename, FolderId, PaymentDate, ExpiryDate, Status, FileId, CustomData) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmt->execute([$docId, $filename, $folderId, $paymentDate, $expiryDate, $status, $fileId, $customData]);
-                addAuditLog($pdo, $_SESSION['user_id'] ?? null, "Create Document", "Created document ID: $docId, Name: $filename");
-            }
-            
-            // Stamp QR Code if there are new files
-            if (isset($input['newFileId']) && $input['newFileId']) {
-                $newFiles = explode(',', $input['newFileId']);
-                foreach ($newFiles as $f) {
-                    $safeFilename = basename(trim($f));
-                    $filepath = '../uploads/' . $safeFilename;
-                    stampQRCodeOnPdf($filepath, $docId);
-                }
-            }
-
-            $stmt = $pdo->prepare("SELECT * FROM documents WHERE ID = ?");
-            $stmt->execute([$docId]);
-            $updatedDoc = $stmt->fetch();
-            $updatedDoc['CustomData'] = json_decode($updatedDoc['CustomData'] ?: '{}', true);
-
-            echo json_encode(['success' => true, 'updatedDoc' => $updatedDoc]);
+        case 'get':
+            $doc = loadDoc($pdo, $input['ID'] ?? '', isAdmin());
+            $out = publicDoc($pdo, $doc['ID']);
+            $out['Versions'] = array_values(array_filter(documentFiles($pdo, $doc['ID'], false), fn($f) => !$f['IsCurrent']));
+            $stmt = $pdo->prepare("SELECT a.Action, a.Details, a.CreatedAt, a.IPAddress, COALESCE(u.Username, 'System') AS Username
+                                   FROM audit_logs a LEFT JOIN users u ON u.ID = a.UserID
+                                   WHERE a.DocumentID = ? ORDER BY a.ID DESC LIMIT 100");
+            $stmt->execute([$doc['ID']]);
+            $out['History'] = $stmt->fetchAll();
+            echo json_encode(['success' => true, 'document' => $out]);
             break;
 
-        case 'deleteDocument':
-            if (!isAdmin()) jsonFail(403, 'เฉพาะผู้ดูแลระบบเท่านั้นที่ลบเอกสารได้');
-            $docId = $input['ID'];
-            // Get file paths to delete physical files
-            $stmt = $pdo->prepare("SELECT FileId FROM documents WHERE ID = ?");
-            $stmt->execute([$docId]);
-            $doc = $stmt->fetch();
-            if ($doc && $doc['FileId']) {
-                $files = explode(',', $doc['FileId']);
-                foreach ($files as $file) {
-                    $safeFilename = basename(trim($file));
-                    $filepath = '../uploads/' . $safeFilename;
-                    if (file_exists($filepath) && is_file($filepath)) {
-                        unlink($filepath);
-                    }
+        case 'createDocument':
+            if (!canEdit()) jsonFail(403, 'บัญชีนี้มีสิทธิ์ดูเอกสารเท่านั้น');
+            $filename = trim((string)($input['Filename'] ?? ''));
+            $folderId = ($input['FolderId'] ?? '') !== '' ? (int)$input['FolderId'] : null;
+            $paymentDate = validDate($input['PaymentDate'] ?? '');
+            if ($filename === '') jsonFail(400, 'กรุณาระบุชื่อเอกสาร');
+            requireFolderExists($pdo, $folderId);
+            if (!canAccessFolder($pdo, $folderId)) jsonFail(403, 'ไม่มีสิทธิ์จัดเก็บในแฟ้มนี้');
+            $rels = stagedFilesFrom($input['newFileId'] ?? []);
+
+            $workflow = $input['WorkflowStatus'] ?? 'PendingReview';
+            if (!isset(WORKFLOW_LABELS[$workflow]) || ($workflow === 'Approved' && !isAdmin())) $workflow = 'PendingReview';
+
+            $pdo->beginTransaction();
+            $prefix = (string)($input['Prefix'] ?? '');
+            $requestedId = trim((string)($input['ID'] ?? ''));
+            if (!empty($input['autoId']) && $prefix !== '') {
+                // The suggested number may have been taken meanwhile; reserve one atomically
+                $docId = reserveNextId($pdo, $prefix);
+            } else {
+                $docId = $requestedId;
+                if (!preg_match(DOC_ID_PATTERN, $docId)) {
+                    $pdo->rollBack();
+                    jsonFail(400, DOC_ID_MESSAGE);
                 }
+                $stmt = $pdo->prepare("SELECT 1 FROM documents WHERE ID = ?");
+                $stmt->execute([$docId]);
+                if ($stmt->fetchColumn()) { $pdo->rollBack(); jsonFail(409, "รหัสเอกสาร $docId มีอยู่แล้ว"); }
             }
 
-            $stmt = $pdo->prepare("DELETE FROM documents WHERE ID = ?");
-            $stmt->execute([$docId]);
-            addAuditLog($pdo, $_SESSION['user_id'] ?? null, "Delete Document", "Deleted document ID: $docId");
+            $expiryDate = expiryFor($pdo, $docId, $paymentDate);
+            $status = ($expiryDate && strtotime($expiryDate) < time()) ? 'Expired' : 'Active';
+            $customData = json_encode((object)($input['CustomData'] ?? []), JSON_UNESCAPED_UNICODE);
+
+            $stmt = $pdo->prepare("INSERT INTO documents (ID, Filename, FolderId, PaymentDate, ExpiryDate, Status, FileId, CustomData,
+                                                          Tags, WorkflowStatus, CreatedBy, UpdatedAt, VerifyToken)
+                                   VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, NOW(), ?)");
+            $stmt->execute([$docId, $filename, $folderId, $paymentDate, $expiryDate, $status, $customData,
+                            cleanTags($input['Tags'] ?? ''), $workflow, $me, bin2hex(random_bytes(16))]);
+            $attach = attachFiles($pdo, $docId, $rels, 'append', $me);
+            updateSearchIndex($pdo, $docId);
+            $pdo->commit();
+
+            addAuditLog($pdo, $me, "Create Document", "Created document ID: $docId, Name: $filename ({$attach['attached']} file(s))", $docId);
+            if ($attach['attached']) spawnBackground('extract_text.php', [$docId]);
+
+            echo json_encode(['success' => true, 'updatedDoc' => publicDoc($pdo, $docId),
+                              'idChanged' => $requestedId !== '' && $requestedId !== $docId, 'stampFailed' => $attach['stampFailed']]);
+            break;
+
+        case 'updateDocumentMetadata':
+            if (!canEdit()) jsonFail(403, 'บัญชีนี้มีสิทธิ์ดูเอกสารเท่านั้น');
+            $doc = loadDoc($pdo, $input['oldId'] ?? '');
+            $oldId = $doc['ID'];
+            $docId = trim((string)($input['newId'] ?? $oldId));
+            if ($docId !== $oldId && !preg_match(DOC_ID_PATTERN, $docId)) jsonFail(400, DOC_ID_MESSAGE);
+            // Someone else saved this document after it was opened: refuse rather than silently overwrite
+            if (isset($input['RowVersion']) && (int)$input['RowVersion'] !== (int)$doc['RowVersion']) {
+                jsonFail(409, 'มีผู้อื่นแก้ไขเอกสารนี้หลังจากที่คุณเปิด กรุณาปิดแล้วเปิดเอกสารใหม่เพื่อดูข้อมูลล่าสุด');
+            }
+            if ($docId !== $oldId) {
+                $stmt = $pdo->prepare("SELECT 1 FROM documents WHERE ID = ?");
+                $stmt->execute([$docId]);
+                if ($stmt->fetchColumn()) jsonFail(409, "รหัสเอกสาร $docId มีอยู่แล้ว");
+            }
+            $filename = trim((string)($input['Filename'] ?? $doc['Filename']));
+            if ($filename === '') jsonFail(400, 'กรุณาระบุชื่อเอกสาร');
+            $folderId = array_key_exists('FolderId', $input) && $input['FolderId'] !== '' ? (int)$input['FolderId'] : $doc['FolderId'];
+            if ((int)$folderId !== (int)$doc['FolderId']) requireFolderExists($pdo, $folderId);
+            if (!canAccessFolder($pdo, $folderId)) jsonFail(403, 'ไม่มีสิทธิ์จัดเก็บในแฟ้มนี้');
+            $paymentDate = array_key_exists('PaymentDate', $input) ? validDate($input['PaymentDate']) : $doc['PaymentDate'];
+            $expiryDate = expiryFor($pdo, $docId, $paymentDate);
+            $status = ($expiryDate && strtotime($expiryDate) < time()) ? 'Expired' : 'Active';
+            $customData = array_key_exists('CustomData', $input)
+                ? json_encode((object)$input['CustomData'], JSON_UNESCAPED_UNICODE) : $doc['CustomData'];
+            $tags = array_key_exists('Tags', $input) ? cleanTags($input['Tags']) : $doc['Tags'];
+            $rels = stagedFilesFrom($input['newFileId'] ?? []);
+            $mode = ($input['appendFiles'] ?? true) === false ? 'replace' : 'append';
+
+            // A staff change to an approved document goes back to review
+            $changed = $docId !== $oldId || $filename !== $doc['Filename'] || (string)$folderId !== (string)$doc['FolderId']
+                || (string)$paymentDate !== (string)$doc['PaymentDate'] || (string)$tags !== (string)$doc['Tags']
+                || json_decode((string)$customData, true) != json_decode((string)$doc['CustomData'], true) || $rels;
+            $workflow = $doc['WorkflowStatus'];
+            $backToReview = $changed && !isAdmin() && $workflow === 'Approved';
+            if ($backToReview) $workflow = 'PendingReview';
+
+            $pdo->beginTransaction();
+            // document_files follows the ID change through ON UPDATE CASCADE
+            $stmt = $pdo->prepare("UPDATE documents SET ID=?, Filename=?, FolderId=?, PaymentDate=?, ExpiryDate=?, Status=?,
+                                   CustomData=?, Tags=?, WorkflowStatus=?, UpdatedAt=NOW(), RowVersion=RowVersion+1 WHERE ID=?");
+            $stmt->execute([$docId, $filename, $folderId, $paymentDate, $expiryDate, $status, $customData, $tags, $workflow, $oldId]);
+            if ($docId !== $oldId) {
+                $pdo->prepare("UPDATE audit_logs SET DocumentID = ? WHERE DocumentID = ?")->execute([$docId, $oldId]);
+                // The ID printed under the QR code must follow the new ID
+                restampCurrentFiles($pdo, $docId, $me);
+            }
+            $attach = attachFiles($pdo, $docId, $rels, $mode, $me);
+            updateSearchIndex($pdo, $docId);
+            $pdo->commit();
+            if ($backToReview) {
+                addAuditLog($pdo, $me, 'Workflow', 'อนุมัติแล้ว → รอตรวจสอบ (แก้ไขหลังอนุมัติ)', $docId);
+            }
+
+            $what = $docId !== $oldId ? "Updated document ID: $oldId to $docId" : "Updated document $docId";
+            if ($attach['attached']) $what .= $mode === 'replace' ? " · replaced files (new version)" : " · added {$attach['attached']} file(s)";
+            addAuditLog($pdo, $me, "Update Document", "$what, Name: $filename", $docId);
+            if ($attach['attached']) spawnBackground('extract_text.php', [$docId]);
+
+            echo json_encode(['success' => true, 'updatedDoc' => publicDoc($pdo, $docId), 'stampFailed' => $attach['stampFailed'],
+                              'backToReview' => $backToReview]);
+            break;
+
+        case 'removeFile':
+            // The file stays in the version history; it's only removed from the current set
+            if (!canEdit()) jsonFail(403, 'บัญชีนี้มีสิทธิ์ดูเอกสารเท่านั้น');
+            $doc = loadDoc($pdo, $input['ID'] ?? '');
+            $stmt = $pdo->prepare("UPDATE document_files SET IsCurrent = 0, ReplacedAt = NOW() WHERE ID = ? AND DocumentID = ? AND IsCurrent = 1");
+            $stmt->execute([(int)($input['FileRowId'] ?? 0), $doc['ID']]);
+            if (!$stmt->rowCount()) jsonFail(404, 'ไม่พบไฟล์');
+            syncFileIdColumn($pdo, $doc['ID']);
+            $review = !isAdmin() && $doc['WorkflowStatus'] === 'Approved';
+            $pdo->prepare("UPDATE documents SET UpdatedAt = NOW(), RowVersion = RowVersion + 1" . ($review ? ", WorkflowStatus = 'PendingReview'" : "") . " WHERE ID = ?")
+                ->execute([$doc['ID']]);
+            addAuditLog($pdo, $me, 'Update Document', "Removed a file from {$doc['ID']} (kept in history)" . ($review ? ' · ส่งกลับตรวจสอบ' : ''), $doc['ID']);
+            spawnBackground('extract_text.php', [$doc['ID']]);
+            echo json_encode(['success' => true, 'updatedDoc' => publicDoc($pdo, $doc['ID'])]);
+            break;
+
+        case 'setWorkflow':
+            $doc = loadDoc($pdo, $input['ID'] ?? '');
+            $to = $input['WorkflowStatus'] ?? '';
+            if (!isset(WORKFLOW_LABELS[$to])) jsonFail(400, 'สถานะไม่ถูกต้อง');
+            // Staff move drafts to review; only admins approve or send back
+            $allowed = isAdmin() || (canEdit() && $to === 'PendingReview' && $doc['WorkflowStatus'] === 'Draft');
+            if (!$allowed) jsonFail(403, 'ไม่มีสิทธิ์เปลี่ยนสถานะนี้');
+            $pdo->prepare("UPDATE documents SET WorkflowStatus = ?, UpdatedAt = NOW(), RowVersion = RowVersion + 1 WHERE ID = ?")->execute([$to, $doc['ID']]);
+            $note = trim((string)($input['Note'] ?? ''));
+            addAuditLog($pdo, $me, 'Workflow', WORKFLOW_LABELS[$doc['WorkflowStatus']] . ' → ' . WORKFLOW_LABELS[$to] . ($note !== '' ? " ($note)" : ''), $doc['ID']);
+            echo json_encode(['success' => true, 'updatedDoc' => publicDoc($pdo, $doc['ID'])]);
+            break;
+
+        case 'deleteDocument': // move to trash
+            if (!isAdmin()) jsonFail(403, 'เฉพาะผู้ดูแลระบบเท่านั้นที่ลบเอกสารได้');
+            $doc = loadDoc($pdo, $input['ID'] ?? '');
+            $reason = mb_substr(trim((string)($input['Reason'] ?? '')), 0, 255) ?: null;
+            $pdo->prepare("UPDATE documents SET DeletedAt = NOW(), DeletedBy = ?, DeleteReason = ? WHERE ID = ?")
+                ->execute([$me, $reason, $doc['ID']]);
+            addAuditLog($pdo, $me, "Delete Document", "Moved to trash: {$doc['ID']}" . ($reason ? " ($reason)" : ''), $doc['ID']);
+            echo json_encode(['success' => true]);
+            break;
+
+        case 'restoreDocument':
+            if (!isAdmin()) jsonFail(403, 'เฉพาะผู้ดูแลระบบเท่านั้น');
+            $doc = loadDoc($pdo, $input['ID'] ?? '', true);
+            $pdo->prepare("UPDATE documents SET DeletedAt = NULL, DeletedBy = NULL, DeleteReason = NULL WHERE ID = ?")->execute([$doc['ID']]);
+            addAuditLog($pdo, $me, 'Restore Document', "Restored from trash: {$doc['ID']}", $doc['ID']);
+            echo json_encode(['success' => true]);
+            break;
+
+        case 'purgeDocument':
+            if (!isAdmin()) jsonFail(403, 'เฉพาะผู้ดูแลระบบเท่านั้น');
+            $doc = loadDoc($pdo, $input['ID'] ?? '', true);
+            if (!$doc['DeletedAt']) jsonFail(400, 'ต้องย้ายเอกสารไปถังขยะก่อนจึงจะลบถาวรได้');
+            purgeDocument($pdo, $doc['ID']);
+            addAuditLog($pdo, $me, 'Purge Document', "Permanently deleted: {$doc['ID']} ({$doc['Filename']})", $doc['ID']);
+            echo json_encode(['success' => true]);
+            break;
+
+        case 'requestDestruction':
+            if (!canEdit()) jsonFail(403, 'บัญชีนี้มีสิทธิ์ดูเอกสารเท่านั้น');
+            $doc = loadDoc($pdo, $input['ID'] ?? '');
+            if (!$doc['ExpiryDate'] || strtotime($doc['ExpiryDate']) >= strtotime('today')) {
+                jsonFail(400, 'ขอทำลายได้เฉพาะเอกสารที่ครบอายุการเก็บแล้ว');
+            }
+            $reason = mb_substr(trim((string)($input['Reason'] ?? '')), 0, 255) ?: 'ครบอายุการเก็บรักษา';
+            $pdo->prepare("UPDATE documents SET DestructionRequestedAt = NOW(), DestructionRequestedBy = ?, DestructionReason = ? WHERE ID = ?")
+                ->execute([$me, $reason, $doc['ID']]);
+            addAuditLog($pdo, $me, 'Request Destruction', "Requested destruction of {$doc['ID']}: $reason", $doc['ID']);
+            echo json_encode(['success' => true]);
+            break;
+
+        case 'decideDestruction':
+            if (!isAdmin()) jsonFail(403, 'เฉพาะผู้ดูแลระบบเท่านั้น');
+            $doc = loadDoc($pdo, $input['ID'] ?? '');
+            if (!$doc['DestructionRequestedAt']) jsonFail(400, 'เอกสารนี้ไม่มีคำขอทำลาย');
+            if (!empty($input['approve'])) {
+                $pdo->prepare("UPDATE documents SET DeletedAt = NOW(), DeletedBy = ?, DeleteReason = ? WHERE ID = ?")
+                    ->execute([$me, 'อนุมัติทำลาย: ' . $doc['DestructionReason'], $doc['ID']]);
+                addAuditLog($pdo, $me, 'Approve Destruction', "Approved destruction of {$doc['ID']} (moved to trash)", $doc['ID']);
+            } else {
+                $pdo->prepare("UPDATE documents SET DestructionRequestedAt = NULL, DestructionRequestedBy = NULL, DestructionReason = NULL WHERE ID = ?")
+                    ->execute([$doc['ID']]);
+                addAuditLog($pdo, $me, 'Reject Destruction', "Rejected destruction request for {$doc['ID']}", $doc['ID']);
+            }
+            echo json_encode(['success' => true]);
+            break;
+
+        case 'reindexText':
+            if (!canEdit()) jsonFail(403, 'บัญชีนี้มีสิทธิ์ดูเอกสารเท่านั้น');
+            $doc = loadDoc($pdo, $input['ID'] ?? '');
+            spawnBackground('extract_text.php', [$doc['ID']]);
             echo json_encode(['success' => true]);
             break;
 
         case 'getNextId':
-            $prefix = $input['Prefix'] ?? '';
-            if (empty($prefix)) {
-                echo json_encode(['success' => false, 'message' => 'Prefix is required']);
-                exit;
-            }
-            
-            $stmt = $pdo->prepare("SELECT ID FROM documents WHERE ID LIKE ? ORDER BY LENGTH(ID) DESC, ID DESC LIMIT 1");
-            $stmt->execute([$prefix . '%']);
-            $lastDoc = $stmt->fetch();
-            
-            $nextNumber = 1;
-            if ($lastDoc) {
-                $lastId = $lastDoc['ID'];
-                $numericPart = substr($lastId, strlen($prefix));
-                if (is_numeric($numericPart)) {
-                    $nextNumber = intval($numericPart) + 1;
-                }
-            }
-            
-            $nextIdStr = sprintf("%06d", $nextNumber);
-            echo json_encode(['success' => true, 'nextNumber' => $nextIdStr]);
+            $prefix = (string)($input['Prefix'] ?? '');
+            if ($prefix === '') jsonFail(400, 'Prefix is required');
+            echo json_encode(['success' => true, 'nextNumber' => sprintf("%06d", peekNextNumber($pdo, $prefix))]);
             break;
 
         default:
-            echo json_encode(['success' => false, 'message' => 'Invalid action']);
-            break;
+            jsonFail(400, 'Invalid action');
     }
 } catch (Exception $e) {
-    echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    if ($pdo->inTransaction()) $pdo->rollBack();
+    error_log('document.php: ' . $e->getMessage());
+    jsonFail(500, 'เกิดข้อผิดพลาดของระบบ กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ');
 }
-?>
