@@ -164,8 +164,9 @@ function attachFiles($pdo, $docId, array $rels, $mode, $userId) {
     $verifyUrl = publicBaseUrl($pdo) . '/verify.php?t=' . $token;
 
     $ins = $pdo->prepare("INSERT INTO document_files
-        (DocumentID, StoredPath, OriginalPath, OriginalName, MimeType, SizeBytes, PageCount, Sha256, OriginalSha256, Version, UploadedBy)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        (DocumentID, StoredPath, OriginalPath, OriginalName, MimeType, SizeBytes, PageCount, Sha256, OriginalSha256, Version, UploadedBy, SourceSha256)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    require_once __DIR__ . '/docsign.php';
 
     foreach ($rels as $rel) {
         $abs = absPath($rel);
@@ -184,13 +185,15 @@ function attachFiles($pdo, $docId, array $rels, $mode, $userId) {
                 copy(absPath($origRel), $abs);
                 $result['stampFailed'][] = basename($rel);
             }
+            signPdf($pdo, $abs);
         }
 
         $ins->execute([
             $docId, $storedRel, $origRel, $_SESSION['staged_names'][$rel] ?? basename($rel),
             MIME_BY_EXT[$ext] ?? 'application/octet-stream', filesize($abs), $pages,
-            hash_file('sha256', $abs), $origSha, $version, $userId,
+            hash_file('sha256', $abs), $origSha, $version, $userId, $_SESSION['staged_source_sha'][$rel] ?? null,
         ]);
+        unset($_SESSION['staged_source_sha'][$rel]);
         unstageFile($rel);
         $result['attached']++;
     }
@@ -254,6 +257,8 @@ function indexDocumentText($pdo, $docId) {
     $pdo->prepare("UPDATE documents SET OcrText = ? WHERE ID = ?")->execute([$joined !== '' ? $joined : null, $docId]);
     require_once __DIR__ . '/search.php';
     updateSearchIndex($pdo, $docId);
+    require_once __DIR__ . '/pii.php';
+    updatePiiFlag($pdo, $docId);
     return mb_strlen($joined);
 }
 
@@ -307,6 +312,7 @@ function findOrphanFiles($pdo) {
             $referenced[preg_replace('#^uploads/#', '', trim($f))] = true;
         }
     }
+    foreach ($pdo->query("SELECT StoredPath FROM inbox_files") as $r) $referenced[$r['StoredPath']] = true;
     foreach ($pdo->query("SELECT Files FROM scan_jobs WHERE CreatedAt > DATE_SUB(NOW(), INTERVAL 1 DAY)") as $r) {
         foreach (json_decode((string)$r['Files'], true) ?: [] as $f) $referenced[$f] = true;
     }
@@ -337,9 +343,28 @@ function restampCurrentFiles($pdo, $docId, $userId) {
         if (!is_file(absPath($f['OriginalPath']))) continue;
         $newRel = newStoragePath('doc', 'pdf');
         if (!stampQrCode(absPath($f['OriginalPath']), absPath($newRel), $verifyUrl, $docId)) continue;
+        require_once __DIR__ . '/docsign.php';
+        signPdf($pdo, absPath($newRel));
         $retire->execute([$f['ID']]);
         $ins->execute([$docId, $newRel, $f['OriginalPath'], $f['OriginalName'], $f['MimeType'], filesize(absPath($newRel)),
                        $f['PageCount'], hash_file('sha256', absPath($newRel)), $f['OriginalSha256'], $f['Version'], $userId]);
     }
     syncFileIdColumn($pdo, $docId);
+}
+
+/**
+ * Replace one file of a document with an edited/rescanned version (pages inserted, replaced or removed).
+ * The old file stays in the history; the new one becomes the next version. Returns the attach result or null.
+ */
+function replaceSingleFile($pdo, $docId, $fileRowId, $rel, $userId) {
+    $stmt = $pdo->prepare("SELECT ID FROM document_files WHERE ID = ? AND DocumentID = ? AND IsCurrent = 1");
+    $stmt->execute([$fileRowId, $docId]);
+    if (!$stmt->fetchColumn()) return null;
+    $stmt = $pdo->prepare("SELECT COALESCE(MAX(Version), 0) + 1 FROM document_files WHERE DocumentID = ?");
+    $stmt->execute([$docId]);
+    $next = (int)$stmt->fetchColumn();
+    $pdo->prepare("UPDATE document_files SET IsCurrent = 0, ReplacedAt = NOW() WHERE ID = ?")->execute([$fileRowId]);
+    $result = attachFiles($pdo, $docId, [$rel], 'append', $userId);
+    $pdo->prepare("UPDATE document_files SET Version = ? WHERE DocumentID = ? AND StoredPath = ?")->execute([$next, $docId, $rel]);
+    return $result;
 }

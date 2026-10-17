@@ -63,10 +63,37 @@ try {
     $status['error'] = $e->getMessage();
     addAuditLog($pdo, null, 'Backup Failed', $e->getMessage());
 }
+// 3) a second copy somewhere else (NAS share or external drive), verified by size and hash
+$offsite = trim(getSetting($pdo, 'offsite_backup_dir', ''));
+if ($status['state'] === 'done' && $offsite !== '') {
+    try {
+        if (!is_dir($offsite) || !is_writable($offsite)) throw new RuntimeException("เข้าถึงที่เก็บสำรองภายนอกไม่ได้: $offsite");
+        $target = rtrim($offsite, '\\/') . DIRECTORY_SEPARATOR . $name;
+        if (!is_dir($target) && !mkdir($target, 0700, true)) throw new RuntimeException("สร้างโฟลเดอร์ $target ไม่ได้");
+        foreach (['database.sql.gz', 'uploads.zip'] as $f) {
+            if (!copy("$dir/$f", "$target/$f") || hash_file('sha256', "$dir/$f") !== hash_file('sha256', "$target/$f")) {
+                throw new RuntimeException("คัดลอก $f ไปที่เก็บภายนอกไม่สมบูรณ์");
+            }
+        }
+        $status['offsite'] = ['state' => 'ok', 'path' => $target];
+        file_put_contents("$target/manifest.json", json_encode($status, JSON_PRETTY_PRINT));
+        // Keep the same number of sets there
+        $remote = glob(rtrim($offsite, '\\/') . DIRECTORY_SEPARATOR . 'edms_*', GLOB_ONLYDIR) ?: [];
+        rsort($remote);
+        foreach (array_slice($remote, BACKUP_KEEP) as $old) {
+            foreach (glob("$old/*") as $f) unlink($f);
+            rmdir($old);
+        }
+    } catch (Throwable $e) {
+        $status['offsite'] = ['state' => 'failed', 'error' => $e->getMessage()];
+        addAuditLog($pdo, null, 'Backup Failed', 'สำรองไปที่เก็บภายนอกไม่สำเร็จ: ' . $e->getMessage());
+    }
+}
+
 file_put_contents("$dir/manifest.json", json_encode($status, JSON_PRETTY_PRINT));
 echo json_encode($status, JSON_PRETTY_PRINT), "\n";
 
-// 3) keep only the newest BACKUP_KEEP successful sets
+// 4) keep only the newest BACKUP_KEEP successful sets
 $sets = glob(BACKUP_DIR . DIRECTORY_SEPARATOR . 'edms_*', GLOB_ONLYDIR) ?: [];
 rsort($sets);
 foreach (array_slice($sets, BACKUP_KEEP) as $old) {

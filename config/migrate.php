@@ -5,19 +5,53 @@
  * so nothing here renames or drops existing columns.
  */
 
-const EDMS_SCHEMA_VERSION = 3;
+require_once __DIR__ . '/migrate_v5.php';
+
+const EDMS_SCHEMA_VERSION = 5;
+
+/** Empty database: create the base schema from schema.sql (equivalent to version 4). */
+function edmsInstallFresh(PDO $pdo) {
+    $sql = preg_replace('/^\s*--.*$/m', '', file_get_contents(__DIR__ . '/schema.sql'));
+    foreach (preg_split('/;\s*(\r?\n|$)/', $sql) as $stmt) {
+        if (trim($stmt) !== '') $pdo->exec($stmt);
+    }
+    $pdo->prepare("INSERT INTO system_settings (SettingKey, SettingValue) VALUES ('edms_schema_version', '4')
+                   ON DUPLICATE KEY UPDATE SettingValue = '4'")->execute();
+}
+
+/** Portable "ADD COLUMN IF NOT EXISTS" (MySQL 8 has no IF NOT EXISTS for columns). */
+function edmsAddColumn(PDO $pdo, $table, $column, $definition) {
+    $stmt = $pdo->prepare("SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?");
+    $stmt->execute([$table, $column]);
+    if (!$stmt->fetchColumn()) $pdo->exec("ALTER TABLE `$table` ADD COLUMN `$column` $definition");
+}
+
+function edmsAddIndex(PDO $pdo, $table, $name, $columns) {
+    $stmt = $pdo->prepare("SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?");
+    $stmt->execute([$table, $name]);
+    if (!$stmt->fetchColumn()) $pdo->exec("CREATE INDEX `$name` ON `$table` ($columns)");
+}
 
 function edmsMigrate(PDO $pdo) {
+    if (!$pdo->query("SHOW TABLES LIKE 'system_settings'")->fetchColumn()) {
+        edmsInstallFresh($pdo);
+    }
     $current = (int)$pdo->query("SELECT SettingValue FROM system_settings WHERE SettingKey = 'edms_schema_version'")->fetchColumn();
     if ($current >= EDMS_SCHEMA_VERSION) return;
 
     // Serialize concurrent first requests
-    $got = (int)$pdo->query("SELECT GET_LOCK('edms_migrate', 60)")->fetchColumn();
+    try {
+        $got = (int)$pdo->query("SELECT GET_LOCK('edms_migrate', 60)")->fetchColumn();
+    } catch (PDOException $e) {
+        $got = 0;
+    }
     try {
         $current = (int)$pdo->query("SELECT SettingValue FROM system_settings WHERE SettingKey = 'edms_schema_version'")->fetchColumn();
         if ($current < 1) edmsMigrateV1($pdo);
         if ($current < 2) edmsMigrateV2($pdo);
         if ($current < 3) edmsMigrateV3($pdo);
+        if ($current < 4) edmsMigrateV4($pdo);
+        if ($current < 5) edmsMigrateV5($pdo);
         $pdo->prepare("INSERT INTO system_settings (SettingKey, SettingValue) VALUES ('edms_schema_version', ?)
                        ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue)")->execute([EDMS_SCHEMA_VERSION]);
     } finally {

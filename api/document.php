@@ -5,6 +5,8 @@ require_once '../config/database.php';
 require_once '../config/helpers.php';
 require_once '../config/storage.php';
 require_once '../config/search.php';
+require_once '../config/pii.php';
+require_once '../config/access.php';
 require_once '../vendor/autoload.php';
 
 header('Content-Type: application/json');
@@ -35,9 +37,12 @@ function publicDoc($pdo, $id) {
                                   d.WorkflowStatus, d.Tags, d.CustomData, d.CreatedAt, d.UpdatedAt, d.DeletedAt, d.DeleteReason,
                                   d.DestructionRequestedAt, d.DestructionReason, d.VerifyToken, d.RowVersion,
                                   (d.OcrText IS NOT NULL) AS HasText, CHAR_LENGTH(d.OcrText) AS TextLength,
-                                  cu.Username AS CreatedByName, du.Username AS DestructionRequestedByName
+                                  cu.Username AS CreatedByName, du.Username AS DestructionRequestedByName,
+                                  d.PiiFlag, d.PiiSummary, d.LocationId, d.LocationNote, d.CoverPrintedAt, d.ExpectedPages,
+                                  lc.Room, lc.Cabinet, lc.Shelf, lc.Box
                            FROM documents d
                            LEFT JOIN folders f ON f.ID = d.FolderId
+                           LEFT JOIN locations lc ON lc.ID = d.LocationId
                            LEFT JOIN users cu ON cu.ID = d.CreatedBy
                            LEFT JOIN users du ON du.ID = d.DestructionRequestedBy
                            WHERE d.ID = ?");
@@ -47,6 +52,20 @@ function publicDoc($pdo, $id) {
     $doc['HasText'] = (bool)$doc['HasText'];
     $doc['Files'] = documentFiles($pdo, $id);
     $doc['HasFiles'] = count($doc['Files']) > 0;
+    $doc['PiiFlag'] = (int)$doc['PiiFlag'];
+    $doc['LocationLabel'] = implode(' › ', array_filter([$doc['Room'], $doc['Cabinet'] ? 'ตู้ ' . $doc['Cabinet'] : '',
+        $doc['Shelf'] ? 'ชั้น ' . $doc['Shelf'] : '', $doc['Box'] ? 'กล่อง ' . $doc['Box'] : '']));
+    unset($doc['Room'], $doc['Cabinet'], $doc['Shelf'], $doc['Box']);
+    $stmt = $pdo->prepare("SELECT ID, BorrowerName, Purpose, LoanedAt, DueDate FROM loans WHERE DocumentID = ? AND ReturnedAt IS NULL");
+    $stmt->execute([$id]);
+    $doc['Loan'] = $stmt->fetch() ?: null;
+    // What this viewer may do with the files
+    $doc['Access'] = [
+        'seePii' => canSeePii($pdo),
+        'openFiles' => $doc['PiiFlag'] === 0 || canSeePii($pdo),
+        'download' => canDownloadFiles($pdo),
+    ];
+    if (!$doc['Access']['seePii']) $doc['CustomData'] = (object)maskPiiDeep((array)$doc['CustomData']);
     return $doc;
 }
 
@@ -111,6 +130,14 @@ try {
                                    WHERE a.DocumentID = ? ORDER BY a.ID DESC LIMIT 100");
             $stmt->execute([$doc['ID']]);
             $out['History'] = $stmt->fetchAll();
+            // PDPA: record who saw unmasked personal data (once per user and document every 30 minutes)
+            if (!empty($out['PiiFlag']) && !empty($out['Access']['seePii'])) {
+                $seen = $_SESSION['pii_seen'][$doc['ID']] ?? 0;
+                if (time() - $seen > 1800) {
+                    $_SESSION['pii_seen'][$doc['ID']] = time();
+                    addAuditLog($pdo, $me, 'View PII', 'เปิดดูรายละเอียดที่มีข้อมูลส่วนบุคคล: ' . ($out['PiiSummary'] ?? ''), $doc['ID']);
+                }
+            }
             echo json_encode(['success' => true, 'document' => $out]);
             break;
 
@@ -153,6 +180,9 @@ try {
                                    VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, NOW(), ?)");
             $stmt->execute([$docId, $filename, $folderId, $paymentDate, $expiryDate, $status, $customData,
                             cleanTags($input['Tags'] ?? ''), $workflow, $me, bin2hex(random_bytes(16))]);
+            if (!empty($input['ExpectedPages'])) {
+                $pdo->prepare("UPDATE documents SET ExpectedPages = ? WHERE ID = ?")->execute([max(1, (int)$input['ExpectedPages']), $docId]);
+            }
             $attach = attachFiles($pdo, $docId, $rels, 'append', $me);
             updateSearchIndex($pdo, $docId);
             $pdo->commit();
@@ -225,6 +255,40 @@ try {
 
             echo json_encode(['success' => true, 'updatedDoc' => publicDoc($pdo, $docId), 'stampFailed' => $attach['stampFailed'],
                               'backToReview' => $backToReview]);
+            break;
+
+        case 'replaceFile':
+            // One file rescanned or edited (pages inserted, replaced, removed): becomes a new version of that file
+            if (!canEdit()) jsonFail(403, 'บัญชีนี้มีสิทธิ์ดูเอกสารเท่านั้น');
+            $doc = loadDoc($pdo, $input['ID'] ?? '');
+            if ((int)($input['RowVersion'] ?? -1) !== (int)$doc['RowVersion']) jsonFail(409, 'มีผู้อื่นแก้ไขเอกสารนี้หลังจากที่คุณเปิด กรุณาเปิดเอกสารใหม่');
+            $rels = stagedFilesFrom($input['newFileId'] ?? []);
+            if (count($rels) !== 1) jsonFail(400, 'ต้องมีไฟล์ใหม่ 1 ไฟล์');
+            $pdo->beginTransaction();
+            $r = replaceSingleFile($pdo, $doc['ID'], (int)($input['FileRowId'] ?? 0), $rels[0], $me);
+            if ($r === null) { $pdo->rollBack(); jsonFail(404, 'ไม่พบไฟล์ที่จะแทนที่'); }
+            $review = !isAdmin() && $doc['WorkflowStatus'] === 'Approved';
+            $pdo->prepare("UPDATE documents SET UpdatedAt = NOW(), RowVersion = RowVersion + 1" . ($review ? ", WorkflowStatus = 'PendingReview'" : '') . " WHERE ID = ?")
+                ->execute([$doc['ID']]);
+            $pdo->commit();
+            addAuditLog($pdo, $me, 'Update Document', 'แก้ไขหน้าเอกสาร (สร้างเวอร์ชันใหม่ของไฟล์)' . ($review ? ' · ส่งกลับตรวจสอบ' : ''), $doc['ID']);
+            spawnBackground('extract_text.php', [$doc['ID']]);
+            echo json_encode(['success' => true, 'updatedDoc' => publicDoc($pdo, $doc['ID']), 'stampFailed' => $r['stampFailed']]);
+            break;
+
+        case 'setPii':
+            // Mark/unmark personal data by hand (2 = marked by a person, 0 = cleared and re-checked automatically)
+            if (!isAdmin()) jsonFail(403, 'เฉพาะผู้ดูแลระบบเท่านั้น');
+            $doc = loadDoc($pdo, $input['ID'] ?? '');
+            if (!empty($input['flag'])) {
+                $pdo->prepare("UPDATE documents SET PiiFlag = 2, PiiSummary = ? WHERE ID = ?")
+                    ->execute([mb_substr(trim((string)($input['Summary'] ?? '')), 0, 255) ?: 'ระบุโดยผู้ดูแลระบบ', $doc['ID']]);
+            } else {
+                $pdo->prepare("UPDATE documents SET PiiFlag = 0, PiiSummary = NULL WHERE ID = ?")->execute([$doc['ID']]);
+                updatePiiFlag($pdo, $doc['ID']);
+            }
+            addAuditLog($pdo, $me, 'PDPA', !empty($input['flag']) ? 'ระบุว่ามีข้อมูลส่วนบุคคล' : 'ยกเลิกการระบุข้อมูลส่วนบุคคล', $doc['ID']);
+            echo json_encode(['success' => true, 'updatedDoc' => publicDoc($pdo, $doc['ID'])]);
             break;
 
         case 'removeFile':

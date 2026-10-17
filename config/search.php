@@ -51,6 +51,50 @@ function buildDocumentFilter($pdo, array $f) {
         $params[] = $f['dateTo'];
     }
 
+    // ---- advanced filters (index fields live in the CustomData JSON) ----
+    $jsonField = fn($name) => ["JSON_UNQUOTE(JSON_EXTRACT(d.CustomData, ?))", '$."' . str_replace(['\\', '"'], ['\\\\', '\\"'], $name) . '"'];
+
+    // Thai fiscal year (Oct–Sep, Buddhist era): from the payment date, or the imported "ปีงบประมาณ" field
+    if (!empty($f['fiscalYear']) && ctype_digit((string)$f['fiscalYear'])) {
+        [$expr, $path] = $jsonField('ปีงบประมาณ');
+        $where[] = "((YEAR(d.PaymentDate) + 543 + (MONTH(d.PaymentDate) >= 10)) = ? OR $expr = ?)";
+        array_push($params, (int)$f['fiscalYear'], $path, (string)$f['fiscalYear']);
+    }
+
+    $amountName = getSetting($pdo, 'amount_field', 'จำนวนเงิน');
+    foreach (['amountMin' => '>=', 'amountMax' => '<='] as $key => $op) {
+        if (isset($f[$key]) && $f[$key] !== '' && is_numeric(str_replace(',', '', $f[$key]))) {
+            [$expr, $path] = $jsonField($amountName);
+            $where[] = "CAST(REPLACE($expr, ',', '') AS DECIMAL(15,2)) $op ?";
+            array_push($params, $path, (float)str_replace(',', '', $f[$key]));
+        }
+    }
+
+    if (!empty($f['department'])) {
+        [$expr, $path] = $jsonField(getSetting($pdo, 'department_field', 'หน่วยงาน'));
+        $where[] = "$expr LIKE ?";
+        array_push($params, $path, '%' . str_replace(['%', '_'], ['\%', '\_'], trim($f['department'])) . '%');
+    }
+
+    if (!empty($f['fieldName']) && isset($f['fieldValue']) && trim($f['fieldValue']) !== '') {
+        [$expr, $path] = $jsonField(mb_substr($f['fieldName'], 0, 100));
+        $where[] = "$expr LIKE ?";
+        array_push($params, $path, '%' . str_replace(['%', '_'], ['\%', '\_'], trim($f['fieldValue'])) . '%');
+    }
+
+    if (!empty($f['locationId'])) {
+        if ($f['locationId'] === 'none') {
+            $where[] = 'd.LocationId IS NULL';
+        } else {
+            $where[] = 'd.LocationId = ?';
+            $params[] = (int)$f['locationId'];
+        }
+    }
+
+    if (($f['loan'] ?? '') === 'onloan') $where[] = 'EXISTS (SELECT 1 FROM loans lo WHERE lo.DocumentID = d.ID AND lo.ReturnedAt IS NULL)';
+    if (($f['loan'] ?? '') === 'overdue') $where[] = 'EXISTS (SELECT 1 FROM loans lo WHERE lo.DocumentID = d.ID AND lo.ReturnedAt IS NULL AND lo.DueDate < CURDATE())';
+    if (($f['pii'] ?? '') === '1') $where[] = 'd.PiiFlag > 0';
+
     // Every word must appear in the ID, title, tags, index fields or the document's text (see document_search)
     $q = normalizeSearchText(mb_substr((string)($f['q'] ?? ''), 0, 200));
     if ($q !== '') {

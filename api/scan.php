@@ -97,6 +97,8 @@ switch ($action) {
             'ocr'         => (bool)($input['ocr'] ?? $d['ocr']),
             'splitPatchT' => (bool)($input['splitPatchT'] ?? $d['splitPatchT']),
             'pdfa'        => (bool)($input['pdfa'] ?? $d['pdfa']),
+            // Lower JPEG quality = smaller colour/grey scans (NAPS2 default 75)
+            'jpegQuality' => isset($input['jpegQuality']) && $input['jpegQuality'] !== '' ? max(20, min(100, (int)$input['jpegQuality'])) : null,
         ];
         $pdo->prepare("INSERT INTO scan_jobs (UserID, Options) VALUES (?, ?)")->execute([$me, json_encode($options)]);
         $jobId = (int)$pdo->lastInsertId();

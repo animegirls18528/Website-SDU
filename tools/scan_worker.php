@@ -61,6 +61,7 @@ if ($o['skipBlank']) $cmd[] = '--excludeblank';
 if ($o['ocr'] && $o['format'] === 'pdf') { array_push($cmd, '--enableocr', '--ocrlang', SCAN_OCR_LANG); }
 if ($o['splitPatchT']) $cmd[] = '--splitpatcht';
 if ($o['pdfa'] && $o['format'] === 'pdf') { array_push($cmd, '--pdfcompat', 'PDF/A-2b'); }
+if (!empty($o['jpegQuality'])) { array_push($cmd, '--jpegquality', (string)$o['jpegQuality']); }
 
 $process = proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
 if (!is_resource($process)) {

@@ -95,7 +95,33 @@ $v = fn($f) => $f . '?v=' . @filemtime(__DIR__ . '/' . $f);
         <span class="material-icons-round">cloud_upload</span>
         <span>อัปโหลดเอกสาร</span>
       </li>
+      <li data-view="batch" onclick="App.navigate('batch', this)">
+        <span class="material-icons-round">qr_code_2</span>
+        <span>สแกนทีละปึก (ใบปะหน้า)</span>
+      </li>
+      <li data-view="station" onclick="App.navigate('station', this)">
+        <span class="material-icons-round">point_of_sale</span>
+        <span>สถานีสแกน</span>
+      </li>
 <?php endif; ?>
+      <li data-view="loans" onclick="App.navigate('loans', this)">
+        <span class="material-icons-round">assignment_return</span>
+        <span>ยืม-คืนตัวจริง</span>
+      </li>
+<?php if ($isAdmin): ?>
+      <li data-view="reports" onclick="App.navigate('reports', this)">
+        <span class="material-icons-round">summarize</span>
+        <span>รายงาน</span>
+      </li>
+      <li data-view="destruction" onclick="App.navigate('destruction', this)">
+        <span class="material-icons-round">delete_sweep</span>
+        <span>ทำลายเอกสาร</span>
+      </li>
+<?php endif; ?>
+      <li data-view="security" onclick="App.navigate('security', this)">
+        <span class="material-icons-round">admin_panel_settings</span>
+        <span>ความปลอดภัยบัญชี</span>
+      </li>
 <?php if ($isAdmin): ?>
       <li data-view="settings" onclick="App.navigate('settings', this)">
         <span class="material-icons-round">tune</span>
@@ -113,6 +139,16 @@ $v = fn($f) => $f . '?v=' . @filemtime(__DIR__ . '/' . $f);
       </div>
 
       <div class="top-user-profile" style="display:flex; align-items:center; gap:16px;">
+        <div id="bell-wrap" style="position:relative;">
+          <button class="btn btn-outline btn-icon" title="การแจ้งเตือน" onclick="App.Bell.toggle()" style="position:relative;">
+            <span class="material-icons-round" style="font-size:20px;">notifications</span>
+            <span id="bell-badge" class="bell-badge" style="display:none;">0</span>
+          </button>
+          <div id="bell-panel" class="bell-panel" style="display:none;">
+            <div class="bell-head">การแจ้งเตือน</div>
+            <div id="bell-list"></div>
+          </div>
+        </div>
         <div style="display:flex; align-items:center; gap:12px;">
           <div class="user-avatar-circle">
             <?= htmlspecialchars(strtoupper(substr($_SESSION['username'] ?? 'U', 0, 1))) ?>
@@ -222,14 +258,16 @@ $v = fn($f) => $f . '?v=' . @filemtime(__DIR__ . '/' . $f);
   <div class="modal" id="page-editor-modal" style="display:none;">
     <div class="modal-content" style="max-width:1100px; width:96%; height:92vh; display:flex; flex-direction:column; padding:22px;">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
-        <h2 style="margin:0; font-size:1.25rem; display:flex; align-items:center; gap:8px;"><span class="material-icons-round" style="color:var(--primary);">auto_fix_high</span> จัดหน้าเอกสาร</h2>
+        <h2 style="margin:0; font-size:1.25rem; display:flex; align-items:center; gap:8px;"><span class="material-icons-round" style="color:var(--primary);">auto_fix_high</span> <span id="pe-title">จัดหน้าเอกสาร</span></h2>
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn btn-outline" style="padding:7px 12px;" onclick="App.PageEditor.pickInsert()"><span class="material-icons-round" style="font-size:18px;">note_add</span> แทรกหน้าจากไฟล์</button>
+          <input type="file" id="pe-insert-input" accept=".pdf,image/*,.tif,.tiff" multiple style="display:none;" onchange="App.PageEditor.insertFiles(this)">
           <button class="btn btn-outline" style="padding:7px 12px;" onclick="App.PageEditor.rotateAll(-90)"><span class="material-icons-round" style="font-size:18px;">rotate_left</span> หมุนทุกหน้า</button>
           <button class="btn btn-outline" style="padding:7px 12px;" onclick="App.PageEditor.rotateAll(90)"><span class="material-icons-round" style="font-size:18px;">rotate_right</span></button>
           <button class="btn btn-outline" style="padding:7px 12px;" onclick="App.PageEditor.reverse()"><span class="material-icons-round" style="font-size:18px;">swap_vert</span> กลับลำดับ</button>
         </div>
       </div>
-      <p style="font-size:13px; color:var(--text-muted); margin-bottom:10px;">หมุน ลบ หรือย้ายตำแหน่งหน้า แล้วกดบันทึก ระบบจะรวมทุกหน้าเป็นไฟล์ PDF เดียว · <span id="pe-status"></span></p>
+      <p style="font-size:13px; color:var(--text-muted); margin-bottom:10px;">หมุน ลบ ย้าย แทรก หรือแทนที่หน้า (เช่น หน้าที่สแกนไม่ชัด) แล้วกดบันทึก ระบบรวมทุกหน้าเป็นไฟล์ PDF เดียว · <span id="pe-status"></span></p>
       <div id="pe-grid" class="pe-grid"></div>
       <div class="modal-actions" style="margin-top:14px;">
         <button class="btn btn-outline" onclick="App.PageEditor.close()">ยกเลิก</button>
@@ -357,10 +395,30 @@ $v = fn($f) => $f . '?v=' . @filemtime(__DIR__ . '/' . $f);
           </div>
           <button class="btn btn-outline" style="padding:8px 12px;" onclick="App.Docs.resetFilters()" title="ล้างตัวกรอง"><span class="material-icons-round" style="font-size:18px;">filter_alt_off</span></button>
         </div>
+        <div class="adv-bar">
+          <button class="btn btn-outline" style="padding:6px 12px; font-size:13px;" onclick="App.ListTools.toggleAdvanced()"><span class="material-icons-round" style="font-size:17px;">tune</span> ค้นหาขั้นสูง<span id="adv-toggle-count"></span></button>
+          <select id="saved-select" class="form-control" style="width:auto; max-width:260px; padding:6px 10px; font-size:13px;" onchange="App.ListTools.useSaved(this.value)"></select>
+          <button class="btn btn-outline btn-icon" title="บันทึกเงื่อนไขปัจจุบัน" onclick="App.ListTools.saveCurrent()"><span class="material-icons-round" style="font-size:18px;">bookmark_add</span></button>
+          <button class="btn btn-outline btn-icon" title="ลบเงื่อนไขที่เลือก" onclick="App.ListTools.deleteSaved()"><span class="material-icons-round" style="font-size:18px;">bookmark_remove</span></button>
+        </div>
+        <div id="adv-panel" class="filter-bar adv-panel" style="display:none;"></div>
+        <div id="bulk-bar" class="bulk-bar" style="display:none;">
+          <b id="bulk-count"></b>
+          <button class="btn btn-outline" onclick="App.ListTools.bulkMove()"><span class="material-icons-round">drive_file_move</span> ย้ายแฟ้ม</button>
+          <button class="btn btn-outline" onclick="App.ListTools.bulkTags()"><span class="material-icons-round">sell</span> เพิ่มแท็ก</button>
+          <button class="btn btn-outline" onclick="App.ListTools.bulkLocation()"><span class="material-icons-round">inventory_2</span> ที่เก็บตัวจริง</button>
+          <button class="btn btn-outline" onclick="App.ListTools.bulkSubmit()"><span class="material-icons-round">send</span> ส่งตรวจ</button>
+          <button class="btn btn-outline admin-only" onclick="App.ListTools.bulkApprove()"><span class="material-icons-round">task_alt</span> อนุมัติ</button>
+          <button class="btn btn-outline" onclick="App.ListTools.bulkCovers()"><span class="material-icons-round">qr_code_2</span> ใบปะหน้า</button>
+          <button class="btn btn-outline admin-only" onclick="App.ListTools.bulkShare()"><span class="material-icons-round">share</span> ลิงก์ผู้ตรวจ</button>
+          <button class="btn btn-outline admin-only" style="color:var(--danger);" onclick="App.ListTools.bulkTrash()"><span class="material-icons-round">delete_outline</span> ถังขยะ</button>
+          <button class="btn btn-outline admin-only" onclick="App.ListTools.bulkRestore()"><span class="material-icons-round">restore_from_trash</span> กู้คืน</button>
+          <button class="btn btn-outline" style="margin-left:auto;" onclick="App.ListTools.clear()">ยกเลิกการเลือก</button>
+        </div>
         <div class="result-meta"><span id="result-count">กำลังโหลด...</span><span id="result-hint"></span></div>
         <div class="table-responsive" style="border:none; border-radius:0;">
           <table class="data-table">
-            <thead><tr><th>รหัส</th><th>ชื่อเอกสาร / ดัชนี</th><th class="hide-sm">แฟ้มจัดเก็บ</th><th class="hide-sm">วันที่จ่ายเงิน</th><th class="hide-sm">ครบอายุ</th><th>สถานะ</th><th style="text-align:right;">จัดการ</th></tr></thead>
+            <thead><tr><?php if ($canEdit): ?><th class="sel-cell"><input type="checkbox" id="sel-all" title="เลือกทั้งหน้านี้" onchange="App.ListTools.selectPage(this.checked)"></th><?php endif; ?><th>รหัส</th><th>ชื่อเอกสาร / ดัชนี</th><th class="hide-sm">แฟ้มจัดเก็บ</th><th class="hide-sm">วันที่จ่ายเงิน</th><th class="hide-sm">ครบอายุ</th><th>สถานะ</th><th style="text-align:right;">จัดการ</th></tr></thead>
             <tbody id="doc-table-body"></tbody>
           </table>
         </div>
@@ -392,6 +450,11 @@ $v = fn($f) => $f . '?v=' . @filemtime(__DIR__ . '/' . $f);
             <span class="material-icons-round" style="color:#10b981;">scanner</span> 2. ตั้งค่าและสั่งสแกน
           </h3>
 
+          <div style="margin-bottom:12px;"><div class="mini-label">โปรไฟล์สแกน (กดเพื่อตั้งค่าทั้งหมดในครั้งเดียว)</div><div id="profile-bar" class="chips" style="padding:4px 0 0;"></div></div>
+          <div id="inbox-box" class="inbox-box" style="display:none;">
+            <div style="font-weight:600; font-size:14px; margin-bottom:8px; display:flex; gap:6px; align-items:center;"><span class="material-icons-round" style="color:#0891b2;">move_to_inbox</span> ไฟล์จากเครื่องสแกนอื่นรอจัดเก็บ</div>
+            <div id="inbox-list"></div>
+          </div>
           <div id="scanner-status-bar" style="display:flex; align-items:center; gap:10px; padding:12px 16px; border-radius:var(--radius-md); background:#f8fafc; border:1.5px solid var(--border); margin-bottom:16px;">
             <span class="material-icons-round" id="scanner-status-icon" style="font-size:22px; color:#64748b;">cast_connected</span>
             <div style="flex:1;">
@@ -453,6 +516,15 @@ $v = fn($f) => $f . '?v=' . @filemtime(__DIR__ . '/' . $f);
                   <option value="legal">Legal</option>
                 </select>
               </div>
+            </div>
+            <div class="form-group" style="margin:0; grid-column: span 2;">
+              <label style="font-size:12.5px; color:var(--text-muted);">ขนาดไฟล์ (คุณภาพ JPEG สำหรับสี/เทา)</label>
+              <select id="scanJpegQuality" class="form-control" style="font-size:13.5px; padding:9px 12px;">
+                <option value="">ค่าเริ่มต้น (75%)</option>
+                <option value="60">60% — ไฟล์เล็กลง</option>
+                <option value="45">45% — ไฟล์เล็กมาก เหมาะกับเอกสารตัวหนังสือ</option>
+                <option value="90">90% — คมชัด ไฟล์ใหญ่</option>
+              </select>
             </div>
           </div>
 
@@ -545,6 +617,10 @@ $v = fn($f) => $f . '?v=' . @filemtime(__DIR__ . '/' . $f);
         <button data-tab="users" onclick="App.Settings.tab('users')">ผู้ใช้และสิทธิ์</button>
         <button data-tab="system" onclick="App.Settings.tab('system')">ค่าระบบ</button>
         <button data-tab="storage" onclick="App.Settings.tab('storage')">พื้นที่และสำรองข้อมูล</button>
+        <button data-tab="locations" onclick="App.Settings.tab('locations')">ที่เก็บตัวจริง</button>
+        <button data-tab="profiles" onclick="App.Settings.tab('profiles')">โปรไฟล์สแกน</button>
+        <button data-tab="policy" onclick="App.Settings.tab('policy')">นโยบาย PDPA และความปลอดภัย</button>
+        <button data-tab="shares" onclick="App.Settings.tab('shares')">ลิงก์ผู้ตรวจ</button>
       </div>
 
       <div data-pane="folders" class="card" style="padding:0; overflow:hidden;">
@@ -623,8 +699,32 @@ $v = fn($f) => $f . '?v=' . @filemtime(__DIR__ . '/' . $f);
         <div style="text-align:right;"><button class="btn btn-primary" onclick="App.Settings.saveSystem()"><span class="material-icons-round" style="font-size:18px;">save</span> บันทึกการตั้งค่า</button></div>
       </div>
 
+      <div data-pane="locations" class="card" style="padding:0; overflow:hidden; display:none;">
+        <div class="section-head" style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+          <p style="margin:0;">ห้อง ตู้ ชั้น และกล่องที่เก็บต้นฉบับกระดาษ ใช้ระบุในเอกสารแต่ละฉบับ ค้นเจอแล้วรู้ทันทีว่าไปหยิบตัวจริงที่ไหน</p>
+          <button class="btn btn-primary" onclick="App.SettingsExtra.editLocation(0)"><span class="material-icons-round" style="font-size:18px;">add_circle</span> เพิ่มที่เก็บ</button>
+        </div>
+        <div class="table-responsive" style="border:none; border-radius:0;"><table class="data-table"><thead><tr><th style="padding-left:24px;">ห้อง/สถานที่</th><th>ตู้</th><th>ชั้น</th><th>กล่อง</th><th>หมายเหตุ</th><th style="text-align:right;">เอกสาร</th><th style="text-align:right;">จัดการ</th></tr></thead><tbody id="admin-locations-list"></tbody></table></div>
+      </div>
+
+      <div data-pane="profiles" class="card" style="padding:0; overflow:hidden; display:none;">
+        <div class="section-head" style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+          <p style="margin:0;">ชุดค่าการสแกนตามประเภทเอกสาร เช่น "ฎีกา = ขาวดำ 300 DPI สองหน้า" เจ้าหน้าที่กดปุ่มเดียวในหน้าสแกน สถานีสแกน และสแกนทีละปึก</p>
+          <button class="btn btn-primary" onclick="App.SettingsExtra.editProfile(0)"><span class="material-icons-round" style="font-size:18px;">add_circle</span> เพิ่มโปรไฟล์</button>
+        </div>
+        <div class="table-responsive" style="border:none; border-radius:0;"><table class="data-table"><thead><tr><th style="padding-left:24px;">ชื่อ</th><th>การตั้งค่า</th><th>รหัสนำหน้า</th><th>แฟ้ม</th><th>หน้า</th><th style="text-align:right;">จัดการ</th></tr></thead><tbody id="admin-profiles-list"></tbody></table></div>
+      </div>
+
+      <div data-pane="policy" style="display:none;"><div id="policy-form">กำลังโหลด...</div></div>
+
+      <div data-pane="shares" class="card" style="padding:0; overflow:hidden; display:none;">
+        <div class="section-head"><p style="margin:0;">ลิงก์ให้ผู้ตรวจสอบภายนอกเปิดดูเอกสารที่เลือกโดยไม่ต้องมีบัญชี มีวันหมดอายุ ทุกไฟล์มีลายน้ำ · สร้างจากคลังเอกสาร: เลือกเอกสารแล้วกด "ลิงก์ผู้ตรวจ"</p></div>
+        <div class="table-responsive" style="border:none; border-radius:0;"><table class="data-table"><thead><tr><th style="padding-left:24px;">ผู้รับ</th><th style="text-align:right;">เอกสาร</th><th>หมดอายุ</th><th>สถานะ</th><th>การเปิดใช้</th><th style="text-align:right;">จัดการ</th></tr></thead><tbody id="admin-shares-list"></tbody></table></div>
+      </div>
+
       <div data-pane="storage" style="display:none;">
         <div class="card" id="storage-report"><div style="color:var(--text-muted);">กำลังคำนวณพื้นที่...</div></div>
+        <div class="card" id="integrity-card"><div style="color:var(--text-muted);">กำลังโหลด...</div></div>
         <div class="card">
           <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
             <div>
@@ -703,6 +803,148 @@ $v = fn($f) => $f . '?v=' . @filemtime(__DIR__ . '/' . $f);
     </div>
   </template>
 
+
+  <!-- ==================== VIEW: สแกนทีละปึกด้วยใบปะหน้า ==================== -->
+  <template id="view-batch">
+    <div class="upload-wrapper">
+      <h1 style="display:flex; align-items:center; gap:10px;"><span class="material-icons-round" style="color:var(--primary); font-size:32px;">qr_code_2</span> สแกนทีละปึกด้วยใบปะหน้า</h1>
+      <p class="subtitle">สร้างเอกสารและพิมพ์ใบปะหน้าที่มี QR Code → วางใบปะหน้าไว้หน้าแรกของเอกสารแต่ละชุด → ใส่ทั้งปึกเข้าเครื่องสแกนครั้งเดียว ระบบแยกและจัดเก็บเข้าแต่ละรหัสให้เอง</p>
+      <div class="grid-2">
+        <div class="card" style="border-top:4px solid var(--primary);">
+          <h3 class="card-title"><span class="material-icons-round" style="color:var(--primary);">print</span> 1. เตรียมใบปะหน้า</h3>
+          <div class="grid-2" style="gap:12px;">
+            <div class="form-group"><label>รหัสนำหน้า</label><select id="cv-prefix" class="form-control"></select></div>
+            <div class="form-group"><label>แฟ้มจัดเก็บ</label><select id="cv-folder" class="form-control"></select></div>
+            <div class="form-group"><label>วันที่จ่ายเงิน</label><input type="date" id="cv-payment" class="form-control"></div>
+            <div class="form-group"><label>จำนวนหน้าที่ควรได้ (ถ้าเท่ากันทุกชุด)</label><input type="number" min="1" id="cv-pages" class="form-control"></div>
+            <div class="form-group"><label>ที่เก็บตัวจริง</label><select id="cv-location" class="form-control"></select></div>
+            <div class="form-group"><label>แท็ก</label><input id="cv-tags" class="form-control" placeholder="เช่น ฎีกา, งบรายได้"></div>
+          </div>
+          <div class="form-group"><label>ชื่อเรื่อง — บรรทัดละ 1 เอกสาร</label><textarea id="cv-titles" class="form-control" rows="6" placeholder="ฎีกาเบิกค่าวัสดุสำนักงาน&#10;ฎีกาเบิกค่าเดินทางไปราชการ&#10;..."></textarea></div>
+          <div class="doc-sub" style="margin:-6px 0 10px;">หรือสร้างหลายใบด้วยชื่อเดียวกัน:
+            <input id="cv-title-one" class="form-control" style="display:inline-block; width:auto; padding:5px 8px;" placeholder="ชื่อเรื่อง"> จำนวน
+            <input id="cv-copies" type="number" min="1" max="200" class="form-control" style="display:inline-block; width:80px; padding:5px 8px;"> ใบ</div>
+          <button class="btn btn-primary" style="width:100%; justify-content:center;" onclick="App.Batch.createCovers()"><span class="material-icons-round">print</span> สร้างเอกสารและพิมพ์ใบปะหน้า</button>
+          <h4 class="sec-title" style="margin-top:18px;"><span class="material-icons-round">replay</span> พิมพ์ใบปะหน้าให้เอกสารที่มีอยู่แล้ว</h4>
+          <div style="display:flex; gap:8px;"><input id="cv-existing" class="form-control" placeholder="รหัสเอกสาร คั่นด้วยจุลภาคหรือเว้นวรรค"><button class="btn btn-outline" onclick="App.Batch.printExisting()">พิมพ์</button></div>
+        </div>
+        <div class="card" style="border-top:4px solid #10b981;">
+          <h3 class="card-title"><span class="material-icons-round" style="color:#10b981;">document_scanner</span> 2. สแกนหรือเลือกไฟล์ทั้งปึก</h3>
+          <div class="form-group"><label>โปรไฟล์สแกน</label><select id="bt-profile" class="form-control"></select></div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="btn btn-primary" style="flex:1; justify-content:center; background:linear-gradient(135deg,#059669,#10b981);" onclick="App.Batch.scanStack()"><span class="material-icons-round">document_scanner</span> สแกนทั้งปึก</button>
+            <label class="btn btn-outline" style="flex:1; justify-content:center; cursor:pointer;"><span class="material-icons-round">upload_file</span> เลือกไฟล์ PDF/TIFF ทั้งปึก<input type="file" accept=".pdf,.tif,.tiff" style="display:none;" onchange="App.Batch.pickStack(this)"></label>
+          </div>
+          <div id="bt-status" class="doc-sub" style="margin:12px 0;">ระบบจะอ่าน QR Code บนใบปะหน้าในเบราว์เซอร์ แล้วแสดงผลการแยกให้ตรวจก่อนบันทึก</div>
+          <div id="bt-result"></div>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- ==================== VIEW: สถานีสแกน ==================== -->
+  <template id="view-station">
+    <div class="station">
+      <div class="station-main card">
+        <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:14px;">
+          <h1 style="margin:0; display:flex; gap:10px; align-items:center;"><span class="material-icons-round" style="font-size:32px; color:var(--primary);">point_of_sale</span> สถานีสแกน</h1>
+          <select id="st-profile" class="form-control" style="width:auto; min-width:240px;"></select>
+        </div>
+        <input id="st-code" class="st-input" autocomplete="off" placeholder="ยิงบาร์โค้ด / พิมพ์รหัสเอกสาร แล้วกด Enter" onkeydown="App.Station.onKey(event)">
+        <div id="st-doc" class="st-doc"></div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+          <button id="st-scan" class="btn btn-primary st-scan" onclick="App.Station.scan()" disabled><span class="material-icons-round">document_scanner</span> สแกน (Enter / F2)</button>
+          <label class="btn btn-outline" style="cursor:pointer;"><span class="material-icons-round">upload_file</span> หรือเลือกไฟล์<input type="file" multiple accept=".pdf,image/*,.tif,.tiff" style="display:none;" onchange="App.Station.pickFile(this)"></label>
+          <button class="btn btn-outline" onclick="App.Station.reset()">เริ่มใหม่ (Esc)</button>
+        </div>
+        <div id="st-status" style="margin-top:12px; min-height:22px; font-weight:600;"></div>
+      </div>
+      <div class="card station-log">
+        <h3 class="card-title"><span class="material-icons-round" style="color:var(--success);">checklist</span> สแกนแล้วในรอบนี้ <span class="badge success" id="st-count">0</span></h3>
+        <div id="st-log"></div>
+      </div>
+    </div>
+  </template>
+
+  <!-- ==================== VIEW: ยืม-คืนตัวจริง ==================== -->
+  <template id="view-loans">
+    <div>
+      <h1>ทะเบียนยืม-คืนเอกสารตัวจริง</h1>
+      <p class="subtitle">บันทึกการยืมจากหน้ารายละเอียดเอกสาร (แท็บ "ตัวจริง / ยืม-คืน") · ระบบแจ้งเตือนเมื่อเกินกำหนดคืน</p>
+      <div class="card" style="padding:0; overflow:hidden;">
+        <div class="chips" id="loan-chips" style="padding-bottom:12px;">
+          <button class="chip active" data-f="open" onclick="App.Loans.setFilter('open')">กำลังยืม</button>
+          <button class="chip" data-f="overdue" onclick="App.Loans.setFilter('overdue')">เกินกำหนดคืน</button>
+          <button class="chip" data-f="all" onclick="App.Loans.setFilter('all')">ทั้งหมด</button>
+        </div>
+        <div class="table-responsive" style="border:none; border-radius:0;"><table class="data-table"><thead><tr><th>เอกสาร</th><th>ผู้ยืม</th><th>วันที่ยืม</th><th>กำหนดคืน</th><th>สถานะ</th><th></th></tr></thead><tbody id="loans-body"></tbody></table></div>
+      </div>
+    </div>
+  </template>
+
+  <!-- ==================== VIEW: รายงาน ==================== -->
+  <template id="view-reports">
+    <div>
+      <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+        <div><h1>รายงานผู้บริหาร</h1><p class="subtitle" style="margin:0;">เอกสารตามปีงบประมาณ ผลงานสแกน พื้นที่ดิสก์ และการเข้าถึงข้อมูลส่วนบุคคล</p></div>
+        <button class="btn btn-outline" onclick="App.Reports.exportCsv()"><span class="material-icons-round" style="font-size:18px;">download</span> ส่งออก CSV</button>
+      </div>
+      <div class="tabs" id="report-tabs">
+        <button data-tab="fiscal" class="active" onclick="App.Reports.tab('fiscal')">ตามปีงบประมาณและประเภท</button>
+        <button data-tab="productivity" onclick="App.Reports.tab('productivity')">ผลงานสแกนรายบุคคล</button>
+        <button data-tab="disk" onclick="App.Reports.tab('disk')">พื้นที่ดิสก์และคาดการณ์</button>
+        <button data-tab="pii" onclick="App.Reports.tab('pii')">PDPA: ใครเข้าดูข้อมูลส่วนบุคคล</button>
+      </div>
+      <div class="card" id="report-body"></div>
+    </div>
+  </template>
+
+  <!-- ==================== VIEW: ทำลายเอกสาร ==================== -->
+  <template id="view-destruction">
+    <div>
+      <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
+        <div><h1>ทำลายเอกสารตามระเบียบงานสารบรรณ</h1><p class="subtitle" style="margin:0;">จัดทำบัญชีหนังสือขอทำลาย → คณะกรรมการพิจารณา → อนุมัติ → ดำเนินการ · เอกสารครบอายุที่ยังไม่อยู่ในบัญชี <b id="dest-candidates">-</b> ฉบับ</p></div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn btn-outline" onclick="App.Destruction.yearReport()"><span class="material-icons-round" style="font-size:18px;">summarize</span> รายงานประจำปี</button>
+          <button class="btn btn-outline" onclick="App.Destruction.create('requested')"><span class="material-icons-round" style="font-size:18px;">playlist_add</span> จากคำขอทำลาย</button>
+          <button class="btn btn-primary" onclick="App.Destruction.create('expired')"><span class="material-icons-round" style="font-size:18px;">playlist_add</span> สร้างบัญชีจากเอกสารครบอายุ</button>
+        </div>
+      </div>
+      <div class="card" id="dest-body"></div>
+    </div>
+  </template>
+
+  <!-- ==================== VIEW: ความปลอดภัยบัญชี ==================== -->
+  <template id="view-security">
+    <div>
+      <h1>ความปลอดภัยบัญชี</h1>
+      <p class="subtitle">การยืนยันตัวตนสองขั้น อุปกรณ์ที่เข้าสู่ระบบอยู่ และ token สำหรับโปรแกรมสแกนบนเครื่องอื่น</p>
+      <div class="card"><h3 class="card-title"><span class="material-icons-round" style="color:var(--primary);">phonelink_lock</span> การยืนยันตัวตนสองขั้น</h3><div id="sec-2fa">กำลังโหลด...</div></div>
+      <div class="card" style="padding:0; overflow:hidden;">
+        <div class="section-head" style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+          <h3 class="card-title" style="margin:0;"><span class="material-icons-round" style="color:var(--primary);">devices</span> อุปกรณ์ที่เข้าสู่ระบบอยู่</h3>
+          <div style="display:flex; gap:10px; align-items:center;">
+            <?php if ($isAdmin): ?><label class="check-row" style="padding:0;"><input type="checkbox" id="sec-all" onchange="App.Security.loadSessions()"><div>แสดงของทุกคน</div></label><?php endif; ?>
+            <button class="btn btn-outline" onclick="App.Security.revokeOthers()"><span class="material-icons-round" style="font-size:18px;">devices_other</span> ออกจากระบบอุปกรณ์อื่นทั้งหมด</button>
+          </div>
+        </div>
+        <div class="table-responsive" style="border:none; border-radius:0;"><table class="data-table"><thead><tr><th>อุปกรณ์</th><th id="sec-user-col" style="display:none;">ผู้ใช้</th><th>IP</th><th>เข้าสู่ระบบเมื่อ</th><th>ใช้งานล่าสุด</th><th></th></tr></thead><tbody id="sec-sessions"></tbody></table></div>
+      </div>
+      <div class="card" id="sec-tokens-card" style="padding:0; overflow:hidden;">
+        <div class="section-head" style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+          <div><h3 class="card-title" style="margin:0;"><span class="material-icons-round" style="color:#0891b2;">key</span> Token เครื่องสแกนอื่นในสำนักงาน</h3>
+            <p class="doc-sub" style="margin-top:4px;">ติดตั้งโปรแกรม <span class="mono">tools\agent\edms-agent.ps1</span> บนเครื่องที่ต่อสแกนเนอร์ แล้วใช้ token นี้ · ที่อยู่ระบบ: <span class="mono" id="agent-server"></span></p></div>
+          <button class="btn btn-primary" onclick="App.Security.createToken()"><span class="material-icons-round" style="font-size:18px;">add</span> สร้าง token</button>
+        </div>
+        <div class="table-responsive" style="border:none; border-radius:0;"><table class="data-table"><thead><tr><th>ชื่อเครื่อง</th><th>สร้างเมื่อ</th><th>ใช้ล่าสุด</th><th>สถานะ</th><th></th></tr></thead><tbody id="sec-tokens"></tbody></table></div>
+      </div>
+    </div>
+  </template>
+
   <script src="<?= $v('assets/app.js') ?>"></script>
+<?php foreach (['quality', 'listtools', 'detail-extra', 'bell', 'security', 'reports', 'batch', 'settings-extra'] as $m): ?>
+  <script src="<?= $v('assets/modules/' . $m . '.js') ?>"></script>
+<?php endforeach; ?>
+<?php if (!$isAdmin): ?><style>.admin-only { display: none !important; }</style><?php endif; ?>
 </body>
 </html>

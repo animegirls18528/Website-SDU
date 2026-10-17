@@ -156,4 +156,15 @@ function runDailyMaintenance($pdo) {
         }
     }
 }
-?>
+
+/** "ห้อง 201 › ตู้ A › ชั้น 2 › กล่อง 7" — the word is not repeated when the value already starts with it. */
+function locationLabel($l) {
+    $part = function ($word, $v) { $v = trim((string)$v); return $v === '' ? '' : (mb_strpos($v, $word) === 0 ? $v : "$word $v"); };
+    return implode(' › ', array_filter([trim((string)($l['Room'] ?? '')), $part('ตู้', $l['Cabinet'] ?? ''), $part('ชั้น', $l['Shelf'] ?? ''), $part('กล่อง', $l['Box'] ?? '')], 'strlen'));
+}
+
+/** Same label built in SQL for list queries ($a = alias of the locations table). */
+function locationLabelSql($a) {
+    $part = fn($col, $word) => "CASE WHEN NULLIF(TRIM($a.$col), '') IS NULL THEN NULL WHEN $a.$col LIKE '$word%' THEN $a.$col ELSE CONCAT('$word ', $a.$col) END";
+    return "NULLIF(CONCAT_WS(' › ', NULLIF(TRIM($a.Room), ''), " . $part('Cabinet', 'ตู้') . ', ' . $part('Shelf', 'ชั้น') . ', ' . $part('Box', 'กล่อง') . "), '')";
+}
