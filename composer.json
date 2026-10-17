@@ -2,6 +2,8 @@
     "require": {
         "setasign/fpdf": "^1.8",
         "setasign/fpdi": "^2.6",
-        "chillerlan/php-qrcode": "^5.0"
+        "chillerlan/php-qrcode": "^5.0",
+        "smalot/pdfparser": "^2.10",
+        "tecnickcom/tcpdf": "^6.7"
     }
 }

@@ -247,6 +247,21 @@ if ((int)$pdo->query("SELECT COUNT(*) FROM users")->fetchColumn() === 0) {
       </button>
     </form>
 
+    <form id="twofaForm" onsubmit="handle2fa(event)" style="display:none;">
+      <div class="form-group">
+        <label for="twofaCode">รหัสยืนยันสองขั้น</label>
+        <div class="input-wrap">
+          <input type="text" id="twofaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="9" placeholder="รหัส 6 หลักจากแอป Authenticator">
+          <span class="material-icons-round">phonelink_lock</span>
+        </div>
+        <small style="display:block; color:#64748b; margin-top:6px; font-size:12.5px;">เปิดแอป Google / Microsoft Authenticator แล้วกรอกรหัส 6 หลัก หรือใช้รหัสกู้คืน (เช่น A1B2-C3D4)</small>
+      </div>
+      <button type="submit" class="btn-primary" id="twofaBtn">
+        <span>ยืนยัน</span>
+        <span class="material-icons-round" style="font-size: 20px;">verified_user</span>
+      </button>
+    </form>
+
     <div class="login-footer">
       ปลอดภัยด้วยระบบยืนยันตัวตนระดับองค์กร
     </div>
@@ -274,6 +289,11 @@ function handleLogin(e) {
   .then(data => {
     if (data.success) {
       window.location.href = 'index.php';
+    } else if (data.need2fa) {
+      // Password accepted; ask for the authenticator code
+      document.getElementById('loginForm').style.display = 'none';
+      document.getElementById('twofaForm').style.display = 'block';
+      document.getElementById('twofaCode').focus();
     } else {
       errorBox.innerText = data.message || 'เกิดข้อผิดพลาด';
       errorBox.style.display = 'block';
@@ -287,6 +307,36 @@ function handleLogin(e) {
     btn.disabled = false;
     btn.innerText = 'เข้าสู่ระบบ';
   });
+}
+
+function handle2fa(e) {
+  e.preventDefault();
+  const btn = document.getElementById('twofaBtn');
+  const errorBox = document.getElementById('errorBox');
+  btn.disabled = true;
+  errorBox.style.display = 'none';
+  fetch('api/auth.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'verify2fa', code: document.getElementById('twofaCode').value.trim() })
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.success) { window.location.href = 'index.php'; return; }
+    errorBox.innerText = data.message || 'รหัสไม่ถูกต้อง';
+    errorBox.style.display = 'block';
+    btn.disabled = false;
+    if (data.restart) {
+      document.getElementById('twofaForm').style.display = 'none';
+      document.getElementById('loginForm').style.display = 'block';
+      const lb = document.getElementById('loginBtn');
+      lb.disabled = false;
+      lb.innerHTML = '<span>เข้าสู่ระบบ</span><span class="material-icons-round" style="font-size: 20px;">arrow_forward</span>';
+    } else {
+      document.getElementById('twofaCode').select();
+    }
+  })
+  .catch(() => { errorBox.innerText = 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้'; errorBox.style.display = 'block'; btn.disabled = false; });
 }
 </script>
 

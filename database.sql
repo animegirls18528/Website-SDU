@@ -1,3 +1,5 @@
+-- Base schema for a fresh install. Newer tables/columns (document_files, document_search, scan_jobs, folder_permissions,
+-- doc_sequences, workflow/trash columns...) are added automatically by config/migrate.php on first request.
 CREATE DATABASE IF NOT EXISTS dms_system CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE dms_system;
 
@@ -66,5 +68,4 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     FOREIGN KEY (UserID) REFERENCES users(ID) ON DELETE SET NULL
 );
 
-INSERT IGNORE INTO system_settings (SettingKey, SettingValue) VALUES ('line_notify_token', '');
 
