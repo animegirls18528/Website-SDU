@@ -30,12 +30,13 @@ function findUser($pdo, $id) {
 try {
     switch ($action) {
         case 'list':
-            $users = $pdo->query("SELECT ID, Username, Role, FolderScope, locked_until, CreatedAt FROM users ORDER BY ID")->fetchAll();
+            $users = $pdo->query("SELECT ID, Username, Role, FolderScope, locked_until, CreatedAt, TotpEnabled FROM users ORDER BY ID")->fetchAll();
             $perms = [];
             foreach ($pdo->query("SELECT UserID, FolderID FROM folder_permissions") as $p) $perms[(int)$p['UserID']][] = (int)$p['FolderID'];
             foreach ($users as &$u) {
                 $u['ID'] = (int)$u['ID'];
                 $u['FolderIds'] = $perms[$u['ID']] ?? [];
+                $u['TotpEnabled'] = (bool)$u['TotpEnabled'];
                 $u['Locked'] = $u['locked_until'] && strtotime($u['locked_until']) > time();
                 unset($u['locked_until']);
             }

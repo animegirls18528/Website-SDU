@@ -4,14 +4,22 @@
 const SESSION_IDLE_TIMEOUT = 8 * 60 * 60; // 8 hours
 const ROLES = ['admin', 'staff', 'viewer']; // viewer = read-only
 
+require_once __DIR__ . '/session.php';
+
 function startSecureSession() {
+    global $pdo;
     if (session_status() === PHP_SESSION_ACTIVE) return;
+    if (useDatabaseSessions()) {
+        if (!isset($pdo)) require_once __DIR__ . '/database.php'; // assigns the global $pdo
+        session_set_save_handler(new DbSessionHandler($pdo), true);
+    }
+    session_name('EDMSV2'); // separate cookie from the original app on the same host
     session_set_cookie_params([
         'lifetime' => 0,
         'path' => '/',
         'httponly' => true,
         'samesite' => 'Lax',
-        'secure' => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+        'secure' => requestIsHttps(),
     ]);
     session_start();
 

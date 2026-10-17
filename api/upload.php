@@ -68,12 +68,29 @@ if (!move_uploaded_file($file['tmp_name'], absPath($rel))) {
 stageFile($rel, $context);
 $_SESSION['staged_names'][$rel] = mb_substr(basename($file['name']), 0, 255);
 
+// Hash of the file as the user picked it (the browser may convert it to PDF first), for duplicate warnings
+$sourceSha = preg_match('/^[a-f0-9]{64}$/', (string)($_POST['sourceSha256'] ?? '')) ? $_POST['sourceSha256'] : null;
+
 // When this upload replaces an edited staged file, remove the old one
 $replaces = normalizeFileRef($_POST['replaces'] ?? '');
 if ($replaces && isStaged($replaces)) {
     $_SESSION['staged_names'][$rel] = $_SESSION['staged_names'][$replaces] ?? $_SESSION['staged_names'][$rel];
+    $sourceSha = $sourceSha ?? ($_SESSION['staged_source_sha'][$replaces] ?? null);
     @unlink(absPath($replaces));
+    unset($_SESSION['staged_source_sha'][$replaces]);
     unstageFile($replaces);
+}
+if ($sourceSha) $_SESSION['staged_source_sha'][$rel] = $sourceSha;
+
+// Is the same file already in the archive?
+$serverSha = hash_file('sha256', absPath($rel));
+$stmt = $pdo->prepare("SELECT DISTINCT d.ID, d.Filename, d.FolderId FROM document_files f JOIN documents d ON d.ID = f.DocumentID
+                       WHERE d.DeletedAt IS NULL AND (f.SourceSha256 IN (?, ?) OR f.OriginalSha256 IN (?, ?) OR f.Sha256 IN (?, ?)) LIMIT 5");
+$stmt->execute([$sourceSha ?? $serverSha, $serverSha, $sourceSha ?? $serverSha, $serverSha, $sourceSha ?? $serverSha, $serverSha]);
+$duplicates = [];
+foreach ($stmt->fetchAll() as $d) {
+    // Do not reveal titles of documents in folders this user cannot open
+    $duplicates[] = canAccessFolder($pdo, $d['FolderId']) ? ['ID' => $d['ID'], 'Filename' => $d['Filename']] : ['ID' => null, 'Filename' => 'เอกสารในแฟ้มที่คุณไม่มีสิทธิ์เข้าถึง'];
 }
 
 addAuditLog($pdo, $_SESSION['user_id'] ?? null, "Upload File", "Uploaded file: " . basename($rel) . " ({$file['name']})");
@@ -83,4 +100,5 @@ echo json_encode([
     'name' => $_SESSION['staged_names'][$rel],
     'size' => filesize(absPath($rel)),
     'format' => $ext,
+    'duplicates' => $duplicates,
 ]);

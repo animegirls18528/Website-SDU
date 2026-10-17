@@ -143,6 +143,44 @@ try {
             echo json_encode(['success' => true]);
             break;
 
+        case 'getPolicy':
+            require_once '../config/docsign.php';
+            $keys = ['download_roles', 'watermark_mode', 'pii_roles', 'require_admin_2fa', 'amount_field', 'department_field',
+                     'org_name', 'org_name_en', 'sign_enabled'];
+            $out = [];
+            foreach ($keys as $k) $out[$k] = getSetting($pdo, $k, '');
+            echo json_encode(['success' => true, 'policy' => $out, 'certificate' => signingCertInfo()]);
+            break;
+
+        case 'savePolicy':
+            $roles = fn($v) => implode(',', array_values(array_intersect(['admin', 'staff', 'viewer'], (array)$v)));
+            setSetting($pdo, 'download_roles', $roles(array_merge(['admin'], (array)($input['download_roles'] ?? []))));
+            setSetting($pdo, 'pii_roles', $roles(array_merge(['admin'], (array)($input['pii_roles'] ?? []))));
+            setSetting($pdo, 'watermark_mode', in_array($input['watermark_mode'] ?? '', ['off', 'download', 'all'], true) ? $input['watermark_mode'] : 'download');
+            setSetting($pdo, 'require_admin_2fa', !empty($input['require_admin_2fa']) ? '1' : '0');
+            setSetting($pdo, 'sign_enabled', !empty($input['sign_enabled']) ? '1' : '0');
+            foreach (['amount_field', 'department_field', 'org_name'] as $k) setSetting($pdo, $k, mb_substr(trim((string)($input[$k] ?? '')), 0, 100));
+            setSetting($pdo, 'org_name_en', preg_replace('/[^\x20-\x7E]/', '', mb_substr(trim((string)($input['org_name_en'] ?? '')), 0, 100)));
+            if (!empty($input['sign_enabled'])) {
+                require_once '../config/docsign.php';
+                if (!ensureSigningCert($pdo)) jsonFail(500, 'สร้างใบรับรองสำหรับลงลายมือชื่อไม่สำเร็จ (ตรวจ OPENSSL_CONF_PATH ใน config/app.php)');
+            }
+            addAuditLog($pdo, $me, 'Update Settings', 'แก้ไขนโยบายการเข้าถึง ลายน้ำ PDPA และความปลอดภัย');
+            echo json_encode(['success' => true]);
+            break;
+
+        case 'uploadCert':
+            // Organisation certificate from a CA (.p12 / .pfx) replaces the self-signed one
+            require_once '../config/docsign.php';
+            if (!isset($_FILES['cert']) || $_FILES['cert']['error'] !== UPLOAD_ERR_OK) jsonFail(400, 'ไม่ได้รับไฟล์ใบรับรอง');
+            if ($_FILES['cert']['size'] > 100000) jsonFail(400, 'ไฟล์ใบรับรองใหญ่ผิดปกติ');
+            $err = installSigningP12(file_get_contents($_FILES['cert']['tmp_name']), (string)($_POST['password'] ?? ''));
+            @unlink($_FILES['cert']['tmp_name']);
+            if ($err) jsonFail(400, $err);
+            addAuditLog($pdo, $me, 'Update Settings', 'ติดตั้งใบรับรองลายมือชื่อดิจิทัลขององค์กร');
+            echo json_encode(['success' => true, 'certificate' => signingCertInfo()]);
+            break;
+
         case 'storageReport':
             require_once '../config/storage.php';
             $files = listUploadFiles();

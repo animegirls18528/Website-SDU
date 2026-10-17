@@ -4,6 +4,7 @@ require_once '../config/auth.php';
 requireLogin();
 require_once '../config/database.php';
 require_once '../config/search.php';
+require_once '../config/pii.php';
 
 header('Content-Type: application/json');
 
@@ -22,8 +23,11 @@ try {
                d.WorkflowStatus, d.Tags, d.CustomData, d.CreatedAt, d.DeletedAt, d.DeleteReason,
                d.DestructionRequestedAt, d.DestructionReason,
                (d.FileId IS NOT NULL AND d.FileId <> '') AS HasFiles,
-               (d.OcrText IS NOT NULL) AS HasText
-        $from LEFT JOIN folders fo ON fo.ID = d.FolderId
+               (d.OcrText IS NOT NULL) AS HasText, d.PiiFlag, d.PiiSummary, d.LocationId, d.LocationNote, d.CoverPrintedAt,
+               " . locationLabelSql('lc') . " AS LocationLabel,
+               (SELECT lo.BorrowerName FROM loans lo WHERE lo.DocumentID = d.ID AND lo.ReturnedAt IS NULL LIMIT 1) AS OnLoanTo,
+               (SELECT lo.DueDate FROM loans lo WHERE lo.DocumentID = d.ID AND lo.ReturnedAt IS NULL LIMIT 1) AS LoanDue
+        $from LEFT JOIN folders fo ON fo.ID = d.FolderId LEFT JOIN locations lc ON lc.ID = d.LocationId
         WHERE $where ORDER BY $order LIMIT $pageSize OFFSET $offset");
     $stmt->execute($params);
     $docs = $stmt->fetchAll();
@@ -39,8 +43,12 @@ try {
     // Show where the words matched inside the document text
     $q = trim((string)($f['q'] ?? ''));
     $snippetStmt = $q !== '' ? $pdo->prepare("SELECT OcrText FROM documents WHERE ID = ?") : null;
+    $seePii = canSeePii($pdo);
     foreach ($docs as &$d) {
         $d['CustomData'] = json_decode($d['CustomData'] ?: '{}', true) ?: new stdClass();
+        $d['PiiFlag'] = (int)$d['PiiFlag'];
+        // People without PDPA permission see ID / account numbers masked
+        if (!$seePii) $d['CustomData'] = (object)maskPiiDeep((array)$d['CustomData']);
         $d['HasFiles'] = (bool)$d['HasFiles'];
         $d['HasText'] = (bool)$d['HasText'];
         if ($snippetStmt && $d['HasText']) {
@@ -50,6 +58,7 @@ try {
             $pos = mb_stripos($text, $first);
             if ($pos !== false) {
                 $d['Snippet'] = trim(mb_substr($text, max(0, $pos - 60), 160));
+                if (!$seePii) $d['Snippet'] = maskPii($d['Snippet']);
             }
         }
     }

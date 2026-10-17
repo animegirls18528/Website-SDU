@@ -2,3 +2,4 @@ vendor/
 uploads/*
 !uploads/.htaccess
 .env
+config/local.php

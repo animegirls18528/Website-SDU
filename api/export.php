@@ -4,6 +4,7 @@ require_once '../config/auth.php';
 requireLogin();
 require_once '../config/database.php';
 require_once '../config/search.php';
+require_once '../config/pii.php';
 
 [$from, $where, $params] = buildDocumentFilter($pdo, $_GET);
 $order = documentOrderSql($_GET['sort'] ?? '');
@@ -19,6 +20,9 @@ fputcsv($output, ['รหัสเอกสาร (ID)', 'ชื่อเอก�
                   'วันครบอายุ (Expiry Date)', 'สถานะ (Status)', 'ขั้นตอน (Workflow)', 'แท็ก (Tags)', 'ดัชนีเพิ่มเติม', 'วันที่นำเข้าระบบ (Created At)']);
 
 $workflow = ['Draft' => 'ฉบับร่าง', 'PendingReview' => 'รอตรวจสอบ', 'Approved' => 'อนุมัติแล้ว'];
+$seePii = canSeePii($pdo); // PDPA: people without the right get ID / account numbers masked, as in the document list
+// Spreadsheet formula injection: a text cell starting with = + - @ would be executed by Excel, so prefix it with an apostrophe
+$safe = fn($v) => is_string($v) && $v !== '' && strpbrk($v[0], "=+-@	") !== false ? "'" . $v : $v;
 $pdo->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, false);
 $stmt = $pdo->prepare("
     SELECT d.ID, d.Filename, COALESCE(f.FolderName, 'ไม่มีแฟ้ม') AS FolderName, d.PaymentDate, d.ExpiryDate,
@@ -32,10 +36,11 @@ $stmt->execute($params);
 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
     $custom = json_decode($row['CustomData'] ?: '{}', true) ?: [];
     unset($custom['LegacyID']);
+    if (!$seePii) $custom = maskPiiDeep($custom);
     $customText = implode('; ', array_map(fn($k, $v) => "$k: " . (is_scalar($v) ? $v : json_encode($v, JSON_UNESCAPED_UNICODE)), array_keys($custom), $custom));
-    fputcsv($output, [
+    fputcsv($output, array_map($safe, [
         $row['ID'], $row['Filename'], $row['FolderName'], $row['PaymentDate'], $row['ExpiryDate'], $row['Status'],
         $workflow[$row['WorkflowStatus']] ?? $row['WorkflowStatus'], $row['Tags'], $customText, $row['CreatedAt'],
-    ]);
+    ]));
 }
 fclose($output);

@@ -28,6 +28,7 @@ const App = {
       .then(() => {
         this.hideLoader();
         this.navigate('dashboard', document.querySelector('.nav-links li.active'));
+        if (this.Bell) this.Bell.start();
       })
       .catch(() => {
         this.hideLoader();
@@ -44,8 +45,8 @@ const App = {
   },
 
   navigate: function(viewId, elContext) {
-    if ((viewId === 'analytics' || viewId === 'settings') && !this.isAdmin()) viewId = 'dashboard';
-    if ((viewId === 'scan' || viewId === 'upload') && !this.canEdit()) viewId = 'dashboard';
+    if (['analytics', 'settings', 'reports', 'destruction'].includes(viewId) && !this.isAdmin()) viewId = 'dashboard';
+    if (['scan', 'upload', 'batch', 'station'].includes(viewId) && !this.canEdit()) viewId = 'dashboard';
     elContext = elContext || this.navItem(viewId);
     if (elContext) {
       document.querySelectorAll('.nav-links li').forEach(li => li.classList.remove('active'));
@@ -63,6 +64,12 @@ const App = {
     if (viewId === 'scan') this.Scanner.init();
     if (viewId === 'upload') this.Upload.init();
     if (viewId === 'settings') this.Settings.init();
+    if (viewId === 'batch') this.Batch.init();
+    if (viewId === 'station') this.Station.init();
+    if (viewId === 'loans') this.Loans.init();
+    if (viewId === 'reports') this.Reports.init();
+    if (viewId === 'destruction') this.Destruction.init();
+    if (viewId === 'security') this.Security.init();
   },
 
   showLoader: function(msg) {
@@ -100,7 +107,16 @@ const App = {
   },
 
 
-  uploadFile: function(file, onProgress, replaces, context) {
+  sha256Hex: async function(file) {
+    try {
+      const buf = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+      return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (e) {
+      return ''; // crypto.subtle needs https or localhost
+    }
+  },
+
+  uploadFile: function(file, onProgress, replaces, context, extra) {
     const limit = (App.data.settings && App.data.settings.uploadLimitBytes) || 0;
     if (limit && file.size > limit) {
       return Promise.reject(new Error(`ไฟล์ใหญ่ ${App.fmtBytes(file.size)} เกินขนาดสูงสุดที่เซิร์ฟเวอร์รับได้ (${App.fmtBytes(limit)})`));
@@ -110,6 +126,7 @@ const App = {
       formData.append('file', file);
       formData.append('context', context || 'upload');
       if (replaces) formData.append('replaces', replaces);
+      if (extra && extra.sourceSha256) formData.append('sourceSha256', extra.sourceSha256);
       const xhr = new XMLHttpRequest();
       xhr.open('POST', 'api/upload.php', true);
       xhr.setRequestHeader('X-CSRF-Token', window.CSRF_TOKEN);
@@ -305,7 +322,11 @@ App.Dialog = {
             <span>${esc(f.label || '')}${f.required ? ' <b>*</b>' : ''}</span>
             ${f.multiline
               ? `<textarea class="form-control" rows="3" data-i="${i}" placeholder="${esc(f.placeholder || '')}">${esc(f.value || '')}</textarea>`
-              : `<input class="form-control" data-i="${i}" value="${esc(f.value || '')}" placeholder="${esc(f.placeholder || '')}" autocomplete="off">`}
+              : f.type === 'select'
+              ? `<select class="form-control" data-i="${i}">${(f.options || []).map(o => `<option value="${esc(o.value)}" ${String(o.value) === String(f.value ?? '') ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`
+              : f.type === 'checkbox'
+              ? `<span class="check-row" style="padding:2px 0;"><input type="checkbox" data-i="${i}" ${f.value ? 'checked' : ''}><div>${esc(f.checkLabel || '')}</div></span>`
+              : `<input class="form-control" type="${esc(f.type || 'text')}" data-i="${i}" value="${esc(f.value || '')}" placeholder="${esc(f.placeholder || '')}" autocomplete="off" ${f.min !== undefined ? `min="${esc(f.min)}"` : ''}>`}
             <small class="dlg-error"></small>
           </label>`).join('')}
         ${opts.note ? `<div class="dlg-note"><span class="material-icons-round">info</span><span>${esc(opts.note)}</span></div>` : ''}
@@ -330,8 +351,8 @@ App.Dialog = {
         let ok = true;
         inputs.forEach(el => {
           const f = fields[el.dataset.i];
-          const v = el.value.trim();
-          const err = el.parentElement.querySelector('.dlg-error');
+          const v = el.type === 'checkbox' ? (el.checked ? '1' : '') : el.value.trim();
+          const err = el.closest('.dlg-field').querySelector('.dlg-error');
           err.textContent = '';
           el.classList.remove('invalid');
           if (f.required && !v) {
@@ -390,8 +411,12 @@ class StagedList {
       this.uploading.push(job);
       this.render();
       try {
-        const res = await App.uploadFile(await App.prepareFile(file), p => { job.percent = p; this.render(); }, null, this.context);
-        this.items.push({ fileId: res.fileId, name: res.name, size: res.size, format: res.format });
+        // Hash of the file exactly as picked, so the server can warn about duplicates even after PDF conversion
+        const sourceSha256 = await App.sha256Hex(file);
+        const res = await App.uploadFile(await App.prepareFile(file), p => { job.percent = p; this.render(); }, null, this.context, { sourceSha256 });
+        const item = { fileId: res.fileId, name: res.name, size: res.size, format: res.format, duplicates: res.duplicates || [] };
+        this.items.push(item);
+        if (App.Quality) App.Quality.check(item, this);
       } catch (e) {
         App.toast(`${file.name}: ${e.message}`);
       }
@@ -399,7 +424,9 @@ class StagedList {
       this.render();
     }
   }
-  add(item) { this.items.push(item); this.render(); }
+  add(item) { this.items.push(item); this.render(); if (App.Quality) App.Quality.check(item, this); }
+  /** Expected page count for the quality check (from the form, a scan profile or a cover sheet). */
+  expectedPages() { return this.expectedPagesFn ? this.expectedPagesFn() : null; }
   remove(idx) {
     const item = this.items[idx];
     if (!item) return;
@@ -450,11 +477,14 @@ class StagedList {
         <span class="material-icons-round" style="font-size:26px; color:${f.format === 'pdf' ? '#dc2626' : '#2563eb'};">${f.format === 'pdf' ? 'picture_as_pdf' : 'image'}</span>
         <div class="meta">
           <div class="name" title="${App.escapeHtml(f.name)}">${i + 1}. ${App.escapeHtml(f.name)}</div>
-          <div class="sub">${App.fmtBytes(f.size)} · ${App.escapeHtml((f.format || '').toUpperCase())}${f.dpi ? ' · ' + f.dpi + ' DPI' : ''}</div>
+          <div class="sub">${App.fmtBytes(f.size)} · ${App.escapeHtml((f.format || '').toUpperCase())}${f.dpi ? ' · ' + f.dpi + ' DPI' : ''}${f.pages ? ' · ' + f.pages + ' หน้า' : ''}${f.compressedFrom ? ` · บีบอัดจาก ${App.fmtBytes(f.compressedFrom)}` : ''}</div>
+          ${(f.duplicates || []).length ? `<div class="file-warn danger"><span class="material-icons-round">content_copy</span>ไฟล์นี้มีในระบบแล้ว: ${f.duplicates.map(d => d.ID ? `<a href="#" onclick="App.Detail.open(${App.jsArg(d.ID)}); return false;">${App.escapeHtml(d.ID)}</a> ${App.escapeHtml(d.Filename)}` : App.escapeHtml(d.Filename)).join(', ')}</div>` : ''}
+          ${App.Quality ? App.Quality.renderResult(f, this) : ''}
         </div>
         <button class="btn btn-outline btn-icon" title="เลื่อนขึ้น" onclick="${ref}.move(${i}, -1)" ${i === 0 ? 'disabled' : ''}><span class="material-icons-round" style="font-size:18px;">arrow_upward</span></button>
         <button class="btn btn-outline btn-icon" title="ดูตัวอย่าง" style="color:var(--primary);" onclick="App.Viewer.openStaged(${ref}, ${i})"><span class="material-icons-round" style="font-size:18px;">visibility</span></button>
-        ${this.editable(f) ? `<button class="btn btn-outline btn-icon" title="จัดหน้า: หมุน ลบ เรียงหน้า" onclick="App.PageEditor.open(${ref}, [${i}])"><span class="material-icons-round" style="font-size:18px;">auto_fix_high</span></button>` : ''}
+        ${this.editable(f) ? `<button class="btn btn-outline btn-icon" title="จัดหน้า: หมุน ลบ เรียงหน้า แทรกหน้า" onclick="App.PageEditor.open(${ref}, [${i}])"><span class="material-icons-round" style="font-size:18px;">auto_fix_high</span></button>` : ''}
+        ${f.format === 'pdf' && App.Quality ? `<button class="btn btn-outline btn-icon" title="บีบอัดไฟล์ให้เล็กลง" onclick="App.Quality.compress(${ref}, ${i})"><span class="material-icons-round" style="font-size:18px;">compress</span></button>` : ''}
         <button class="btn btn-outline btn-icon" title="นำไฟล์นี้ออก" style="color:var(--danger);" onclick="${ref}.remove(${i})"><span class="material-icons-round" style="font-size:18px;">close</span></button>
       </div>`).join('');
 
@@ -495,6 +525,7 @@ App.DocForm = {
       </div>
       <div class="form-group"><label>วันที่จ่ายเงิน (ใช้คำนวณวันครบอายุการเก็บ)</label><input type="date" id="${p}Payment" class="form-control" value="${App.today()}"></div>
       <div class="form-group"><label>แท็ก (คั่นด้วยจุลภาค)</label><input type="text" id="${p}Tags" class="form-control" placeholder="เช่น ใบเสร็จ, งบรายได้"></div>
+      <div class="form-group"><label>จำนวนหน้าที่ควรได้ (ถ้าทราบ)</label><input type="number" min="1" id="${p}Expected" class="form-control" placeholder="ใช้เตือนเมื่อสแกนได้หน้าไม่ครบ" oninput="App.lists['${p === 'upload' ? 'upload' : 'scan'}'] && App.lists['${p === 'upload' ? 'upload' : 'scan'}'].render()"></div>
       ${cf}
       <div style="border-top:1px solid var(--border); padding-top:8px;">
         <label class="check-row"><input type="checkbox" id="${p}Draft"><div>บันทึกเป็นฉบับร่าง<small>ยังไม่ส่งตรวจ แก้ไขต่อได้ภายหลัง</small></div></label>
@@ -522,6 +553,7 @@ App.DocForm = {
       FolderId: val('Folder'),
       PaymentDate: val('Payment'),
       Tags: val('Tags'),
+      ExpectedPages: val('Expected'),
       draft: document.getElementById(`${p}Draft`)?.checked,
       split: document.getElementById(`${p}Split`)?.checked,
       CustomData: {},
@@ -549,6 +581,7 @@ App.DocForm = {
     const base = {
       action: 'createDocument', Prefix: form.Prefix, Filename: form.Filename, FolderId: form.FolderId,
       PaymentDate: form.PaymentDate, Tags: form.Tags, CustomData: form.CustomData, WorkflowStatus: form.WorkflowStatus,
+      ExpectedPages: form.ExpectedPages,
     };
     const batches = form.split && list.items.length > 1 ? list.items.map(i => [i]) : [list.items];
     const created = [];
@@ -587,7 +620,9 @@ App.DocForm = {
    Document list (server-side search, filters, paging)
    ===================================================================== */
 App.Docs = {
-  defaultState: () => ({ q: '', folderId: '', status: '', dateField: 'payment', dateFrom: '', dateTo: '', sort: '', page: 1, pageSize: 50 }),
+  defaultState: () => ({ q: '', folderId: '', status: '', dateField: 'payment', dateFrom: '', dateTo: '', sort: '', page: 1, pageSize: 50,
+    fiscalYear: '', amountMin: '', amountMax: '', department: '', fieldName: '', fieldValue: '', locationId: '', loan: '', pii: '' }),
+  selected: new Set(),
   state: null,
   seq: 0,
 
@@ -619,6 +654,7 @@ App.Docs = {
     document.getElementById('f-to').value = s.dateTo;
     document.getElementById('f-sort').value = s.sort;
     this.renderChips();
+    if (App.ListTools) App.ListTools.init();
     this.load();
   },
 
@@ -644,7 +680,7 @@ App.Docs = {
     this.load();
   },
   onFilterInput: App.debounce(function() { App.Docs.applyFilters(); }, 350),
-  resetFilters: function() { this.state = this.defaultState(); this.init(); },
+  resetFilters: function() { this.state = this.defaultState(); this.selected.clear(); this.init(); },
 
   searchFromTopBar: App.debounce(function() {
     const q = document.getElementById('globalSearch').value.trim();
@@ -683,6 +719,8 @@ App.Docs = {
       out.push(`<span class="badge ${w.cls}"><span class="material-icons-round" style="font-size:13px;">${w.icon}</span> ${w.label}</span>`);
     }
     if (d.DestructionRequestedAt && !d.DeletedAt) out.push(`<span class="badge danger" title="${App.escapeHtml(d.DestructionReason)}"><span class="material-icons-round" style="font-size:13px;">delete_sweep</span> ขอทำลาย</span>`);
+    if (d.OnLoanTo) out.push(`<span class="badge ${d.LoanDue < App.today() ? 'danger' : 'info'}" title="ยืมโดย ${App.escapeHtml(d.OnLoanTo)} กำหนดคืน ${App.fmtDate(d.LoanDue)}"><span class="material-icons-round" style="font-size:13px;">assignment_return</span> ${d.LoanDue < App.today() ? 'เกินกำหนดคืน' : 'ถูกยืม'}</span>`);
+    if (d.PiiFlag) out.push(`<span class="badge purple" title="${App.escapeHtml(d.PiiSummary || 'มีข้อมูลส่วนบุคคล')}"><span class="material-icons-round" style="font-size:13px;">privacy_tip</span> PDPA</span>`);
     return `<div style="display:flex; flex-wrap:wrap; gap:4px;">${out.join('')}</div>`;
   },
 
@@ -713,7 +751,7 @@ App.Docs = {
       ? `เอกสารในถังขยะจะถูกลบถาวรอัตโนมัติหลัง ${App.data.settings.trashRetentionDays || 30} วัน` : '';
 
     if (!res.documents.length) {
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:48px; color:var(--text-muted);">
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:48px; color:var(--text-muted);">
         <span class="material-icons-round" style="font-size:48px; color:#cbd5e1;">search_off</span>
         <div>ไม่พบเอกสารที่ตรงกับเงื่อนไข</div></td></tr>`;
     } else {
@@ -721,6 +759,7 @@ App.Docs = {
         const id = App.jsArg(d.ID);
         const tags = (d.Tags || '').split(',').map(t => t.trim()).filter(Boolean).map(t => `<span class="tag">${App.escapeHtml(t)}</span>`).join('');
         const summary = this.customSummary(d.CustomData);
+        const sel = App.canEdit() ? `<td class="sel-cell"><input type="checkbox" ${this.selected.has(d.ID) ? 'checked' : ''} onchange="App.ListTools.toggle(${id}, this)"></td>` : '';
         const actions = trash ? `
             <button class="btn btn-outline btn-icon" title="กู้คืน" style="color:var(--success);" onclick="App.Detail.restore(${id})"><span class="material-icons-round" style="font-size:18px;">restore_from_trash</span></button>
             <button class="btn btn-outline btn-icon" title="ลบถาวร" style="color:var(--danger);" onclick="App.Detail.purge(${id})"><span class="material-icons-round" style="font-size:18px;">delete_forever</span></button>`
@@ -728,13 +767,14 @@ App.Docs = {
             ${d.HasFiles ? `<button class="btn btn-outline btn-icon" title="เปิดดูไฟล์" style="color:var(--primary);" onclick="App.Detail.viewFiles(${id})"><span class="material-icons-round" style="font-size:18px;">visibility</span></button>` : ''}
             <button class="btn btn-outline btn-icon" title="รายละเอียด" onclick="App.Detail.open(${id})"><span class="material-icons-round" style="font-size:18px;">info</span></button>
             <button class="btn btn-outline btn-icon" title="บาร์โค้ด" onclick="App.Docs.showBarcode(${id})"><span class="material-icons-round" style="font-size:18px;">qr_code</span></button>`;
-        return `<tr class="doc-row">
+        return `<tr class="doc-row ${this.selected.has(d.ID) ? 'row-selected' : ''}">${sel}
           <td><span class="doc-id" onclick="App.Detail.open(${id})">${App.escapeHtml(d.ID)}</span>
             ${d.HasFiles ? '' : '<div class="doc-sub" title="ยังไม่มีไฟล์แนบ"><span class="material-icons-round" style="font-size:14px; vertical-align:-2px;">link_off</span> ไม่มีไฟล์</div>'}</td>
           <td style="min-width:220px;">
             <div class="doc-title">${App.escapeHtml(d.Filename)}</div>
             ${summary ? `<div class="doc-sub">${summary}</div>` : ''}
             ${tags ? `<div>${tags}</div>` : ''}
+            ${d.LocationLabel ? `<div class="doc-sub"><span class="material-icons-round" style="font-size:13px; vertical-align:-2px;">inventory_2</span> ${App.escapeHtml(d.LocationLabel)}${d.LocationNote ? ' · ' + App.escapeHtml(d.LocationNote) : ''}</div>` : ''}
             ${d.Snippet ? `<div class="doc-snippet">…${this.highlight(d.Snippet, s.q)}…</div>` : ''}
             ${trash && d.DeleteReason ? `<div class="doc-sub" style="color:var(--danger);">เหตุผล: ${App.escapeHtml(d.DeleteReason)}</div>` : ''}
           </td>
@@ -747,6 +787,8 @@ App.Docs = {
       }).join('');
     }
     this.renderPager(res);
+    this.lastPageIds = res.documents.map(d => d.ID);
+    if (App.ListTools) App.ListTools.updateBar();
   },
 
   renderPager: function(res) {
@@ -824,7 +866,9 @@ App.Detail = {
       const res = await App.api('api/document.php', { action: 'get', ID: id });
       App.hideLoader();
       this.doc = res.document;
-      this.tabName = 'info';
+      if (this.doc.Loan) { this.doc.OnLoanTo = this.doc.Loan.BorrowerName; this.doc.LoanDue = this.doc.Loan.DueDate; }
+      if (!this.keepTab) this.tabName = 'info';
+      this.keepTab = false;
       this.render();
       document.getElementById('detail-modal').style.display = 'flex';
     } catch (e) {
@@ -833,7 +877,7 @@ App.Detail = {
     }
   },
   close: function() { document.getElementById('detail-modal').style.display = 'none'; this.doc = null; },
-  refresh: function() { if (this.doc) this.open(this.doc.ID); if (App.currentView === 'dashboard') App.Docs.load(); },
+  refresh: function() { if (this.doc) { this.keepTab = true; this.open(this.doc.ID); } if (App.currentView === 'dashboard') App.Docs.load(); },
 
   viewFiles: async function(id) {
     try {
@@ -858,7 +902,7 @@ App.Detail = {
     const btn = (icon, label, onclick, style) => `<button class="btn btn-outline" style="padding:7px 12px; font-size:13px; ${style || ''}" onclick="${onclick}"><span class="material-icons-round" style="font-size:17px;">${icon}</span> ${label}</button>`;
     const actions = [];
     if (!deleted) {
-      if (d.Files.length) actions.push(btn('visibility', 'เปิดดูไฟล์', `App.Detail.viewFiles(${id})`, 'color:var(--primary);'));
+      if (d.Files.length && d.Access.openFiles) actions.push(btn('visibility', 'เปิดดูไฟล์', `App.Detail.viewFiles(${id})`, 'color:var(--primary);'));
       if (edit) actions.push(btn('edit', 'แก้ไข', `App.Editor.open()`));
       if (edit && d.WorkflowStatus === 'Draft') actions.push(btn('send', 'ส่งตรวจสอบ', `App.Detail.setWorkflow('PendingReview')`));
       if (admin && d.WorkflowStatus === 'PendingReview') {
@@ -871,6 +915,9 @@ App.Detail = {
         actions.push(btn('close', 'ไม่อนุมัติทำลาย', `App.Detail.decideDestruction(false)`));
       }
       actions.push(btn('qr_code', 'บาร์โค้ด', `App.Docs.showBarcode(${id})`));
+      if (edit) actions.push(btn('qr_code_2', 'ใบปะหน้าสแกน', `window.open('cover_print.php?ids=' + encodeURIComponent(${id}), '_blank')`));
+      if (admin) actions.push(btn('share', 'ลิงก์ผู้ตรวจ', `App.Share.create([${id}])`));
+      if (admin) actions.push(btn('privacy_tip', d.PiiFlag ? 'ยกเลิกระบุ PDPA' : 'ระบุว่ามีข้อมูลส่วนบุคคล', `App.DetailExtra.togglePii()`));
       if (d.VerifyToken) actions.push(btn('verified', 'หน้าตรวจสอบ QR', `window.open('verify.php?t=${d.VerifyToken}', '_blank')`));
       if (admin) actions.push(btn('delete_outline', 'ย้ายไปถังขยะ', `App.Detail.trash(${id})`, 'color:var(--danger);'));
     } else if (admin) {
@@ -879,10 +926,12 @@ App.Detail = {
     }
 
     const notices = [];
+    if (d.PiiFlag) notices.push(`<div class="notice info" style="background:#f5f3ff; border-color:#ddd6fe; color:#5b21b6;"><span class="material-icons-round">privacy_tip</span><div>มีข้อมูลส่วนบุคคล (PDPA)${d.PiiSummary ? ': ' + App.escapeHtml(d.PiiSummary) : ''}${d.PiiFlag === 2 ? ' · ระบุโดยผู้ดูแลระบบ' : ' · ตรวจพบอัตโนมัติ'}${d.Access.openFiles ? ' · การเปิดดูถูกบันทึกในรายงาน PDPA' : '<br><b>บัญชีของคุณไม่มีสิทธิ์เปิดไฟล์ของเอกสารนี้</b> ข้อมูลเลขบัตร/เลขบัญชีถูกปิดบัง'}</div></div>`);
+    if (d.Loan) notices.push(`<div class="notice ${d.Loan.DueDate < App.today() ? 'danger' : 'info'}"><span class="material-icons-round">assignment_return</span><div>ตัวจริงถูกยืมโดย <b>${App.escapeHtml(d.Loan.BorrowerName)}</b> ตั้งแต่ ${App.fmtDate(d.Loan.LoanedAt)} กำหนดคืน ${App.fmtDate(d.Loan.DueDate)}${d.Loan.DueDate < App.today() ? ' (เกินกำหนด)' : ''}</div></div>`);
     if (deleted) notices.push(`<div class="notice danger"><span class="material-icons-round">delete</span><div>อยู่ในถังขยะตั้งแต่ ${App.fmtDate(d.DeletedAt, true)}${d.DeleteReason ? ' · ' + App.escapeHtml(d.DeleteReason) : ''}</div></div>`);
     if (d.DestructionRequestedAt && !deleted) notices.push(`<div class="notice warn"><span class="material-icons-round">delete_sweep</span><div>มีคำขอทำลายโดย ${App.escapeHtml(d.DestructionRequestedByName || '-')} เมื่อ ${App.fmtDate(d.DestructionRequestedAt, true)}<br>เหตุผล: ${App.escapeHtml(d.DestructionReason)}</div></div>`);
 
-    const tabs = [['info', 'ข้อมูลเอกสาร'], ['files', `ไฟล์ (${d.Files.length})`], ['versions', `เวอร์ชันเก่า (${d.Versions.length})`], ['history', 'ประวัติ']];
+    const tabs = [['info', 'ข้อมูลเอกสาร'], ['files', `ไฟล์ (${d.Files.length})`], ['physical', 'ตัวจริง / ยืม-คืน'], ['links', 'เอกสารที่เกี่ยวข้อง'], ['versions', `เวอร์ชันเก่า (${d.Versions.length})`], ['history', 'ประวัติ']];
     let body = '';
     if (this.tabName === 'info') {
       const custom = Object.entries(d.CustomData || {}).filter(([k]) => k !== 'LegacyID');
@@ -893,6 +942,8 @@ App.Detail = {
         <dt>วันครบอายุการเก็บ</dt><dd>${App.fmtDate(d.ExpiryDate)} ${expired ? '<span class="badge danger">ครบอายุแล้ว</span>' : ''}</dd>
         <dt>ขั้นตอน</dt><dd><span class="badge ${w.cls}">${w.label}</span></dd>
         <dt>แท็ก</dt><dd>${tags}</dd>
+        <dt>ที่เก็บตัวจริง</dt><dd>${d.LocationLabel ? App.escapeHtml(d.LocationLabel) + (d.LocationNote ? ' · ' + App.escapeHtml(d.LocationNote) : '') : '<span style="color:var(--text-muted); font-weight:400;">ยังไม่ระบุ</span>'}</dd>
+        ${d.ExpectedPages ? `<dt>จำนวนหน้าที่ควรได้</dt><dd>${d.ExpectedPages} หน้า${d.Files.length ? ` (ไฟล์ปัจจุบันรวม ${d.Files.reduce((s, f) => s + (+f.PageCount || 0), 0)} หน้า)` : ''}</dd>` : ''}
         ${custom.map(([k, v]) => `<dt>${App.escapeHtml(k)}</dt><dd>${App.escapeHtml(typeof v === 'object' ? JSON.stringify(v) : v)}</dd>`).join('')}
         <dt>นำเข้าระบบ</dt><dd>${App.fmtDate(d.CreatedAt, true)}${d.CreatedByName ? ' · ' + App.escapeHtml(d.CreatedByName) : ''}</dd>
         <dt>แก้ไขล่าสุด</dt><dd>${App.fmtDate(d.UpdatedAt, true)}</dd>
@@ -901,6 +952,10 @@ App.Detail = {
       </dl>`;
     } else if (this.tabName === 'files') {
       body = d.Files.length ? d.Files.map(f => this.fileRow(f, edit && !deleted)).join('') : `<div class="notice info"><span class="material-icons-round">info</span><div>ยังไม่มีไฟล์แนบ${edit && !deleted ? ' — กด "แก้ไข" เพื่อแนบไฟล์' : ''}</div></div>`;
+    } else if (this.tabName === 'physical') {
+      body = App.DetailExtra.physicalTab(d);
+    } else if (this.tabName === 'links') {
+      body = App.DetailExtra.linksTab(d);
     } else if (this.tabName === 'versions') {
       body = d.Versions.length
         ? `<p style="font-size:13px; color:var(--text-muted); margin-bottom:10px;">ไฟล์ที่ถูกแทนที่หรือนำออก ระบบเก็บไว้ให้ตรวจย้อนหลัง</p>` + d.Versions.map(f => this.fileRow(f, false, true)).join('')
@@ -929,6 +984,8 @@ App.Detail = {
 
   fileRow: function(f, canRemove, isOld) {
     const fid = App.jsArg(f.StoredPath);
+    const acc = (this.doc && this.doc.Access) || { openFiles: true, download: true };
+    const isPdf = /pdf/.test(f.MimeType);
     return `<div class="file-row">
       <span class="material-icons-round" style="font-size:26px; color:${/pdf/.test(f.MimeType) ? '#dc2626' : '#2563eb'};">${/pdf/.test(f.MimeType) ? 'picture_as_pdf' : 'image'}</span>
       <div class="meta">
@@ -936,9 +993,10 @@ App.Detail = {
         <div class="sub">${f.PageCount ? f.PageCount + ' หน้า · ' : ''}${App.fmtBytes(f.SizeBytes)} · ${App.fmtDate(f.CreatedAt, true)}${f.UploadedBy ? ' · ' + App.escapeHtml(f.UploadedBy) : ''}${isOld && f.ReplacedAt ? ' · ถูกแทนที่ ' + App.fmtDate(f.ReplacedAt, true) : ''}</div>
         ${f.Sha256 ? `<div class="sub mono" title="SHA-256 ใช้ตรวจว่าไฟล์ไม่ถูกแก้ไข">SHA-256 ${f.Sha256.slice(0, 16)}…</div>` : ''}
       </div>
-      <button class="btn btn-outline btn-icon" title="เปิดดู" style="color:var(--primary);" onclick="App.Viewer.open([{fileId:${fid}, name:${App.jsArg(f.OriginalName)}}], ${App.jsArg(f.OriginalName)})"><span class="material-icons-round" style="font-size:18px;">visibility</span></button>
-      <a class="btn btn-outline btn-icon" title="ดาวน์โหลด" href="${App.fileUrl(f.StoredPath, true)}"><span class="material-icons-round" style="font-size:18px;">download</span></a>
-      ${f.OriginalPath ? `<a class="btn btn-outline btn-icon" title="ดาวน์โหลดต้นฉบับ (ก่อนประทับ QR)" href="${App.fileUrl(f.OriginalPath, true)}"><span class="material-icons-round" style="font-size:18px;">description</span></a>` : ''}
+      ${acc.openFiles ? `<button class="btn btn-outline btn-icon" title="เปิดดู" style="color:var(--primary);" onclick="App.Viewer.open([{fileId:${fid}, name:${App.jsArg(f.OriginalName)}}], ${App.jsArg(f.OriginalName)})"><span class="material-icons-round" style="font-size:18px;">visibility</span></button>` : '<span class="badge purple">ไม่มีสิทธิ์เปิด</span>'}
+      ${acc.openFiles && acc.download ? `<a class="btn btn-outline btn-icon" title="ดาวน์โหลด" href="${App.fileUrl(f.StoredPath, true)}"><span class="material-icons-round" style="font-size:18px;">download</span></a>` : ''}
+      ${acc.openFiles && acc.download && f.OriginalPath ? `<a class="btn btn-outline btn-icon" title="ดาวน์โหลดต้นฉบับ (ก่อนประทับ QR)" href="${App.fileUrl(f.OriginalPath, true)}"><span class="material-icons-round" style="font-size:18px;">description</span></a>` : ''}
+      ${canRemove && isPdf && !isOld ? `<button class="btn btn-outline btn-icon" title="แก้ไขหน้า: แทรก แทนที่ หมุน ลบหน้า (สร้างเวอร์ชันใหม่)" onclick="App.DetailExtra.editPages(${f.ID})"><span class="material-icons-round" style="font-size:18px;">auto_fix_high</span></button>` : ''}
       ${canRemove ? `<button class="btn btn-outline btn-icon" title="นำออก (เก็บไว้ในเวอร์ชันเก่า)" style="color:var(--danger);" onclick="App.Detail.removeFile(${f.ID})"><span class="material-icons-round" style="font-size:18px;">link_off</span></button>` : ''}
     </div>`;
   },
@@ -1161,53 +1219,34 @@ App.Viewer = {
    Page editor: rotate / delete / reorder pages and merge files (pdf-lib in the browser)
    ===================================================================== */
 App.PageEditor = {
-  list: null, indices: [], sources: [], pages: [],
+  list: null, indices: [], sources: [], pages: [], selected: -1, opts: {}, replaceAt: -1,
 
-  open: async function(list, indices) {
+  /**
+   * Edit pages of staged files (list + item indices), or — with opts.onSaved — of a file already in a document
+   * (opts.items: [{fileId, name, format}]). Pages can be rotated, moved, removed, inserted from other files and
+   * replaced; everything is saved as one new PDF.
+   */
+  open: async function(list, indices, opts) {
     this.list = list;
-    this.indices = indices;
+    this.indices = indices || [];
+    this.opts = opts || {};
     this.sources = [];
     this.pages = [];
+    this.selected = -1;
     document.getElementById('page-editor-modal').style.display = 'flex';
-    const grid = document.getElementById('pe-grid');
-    grid.innerHTML = '';
+    document.getElementById('pe-title').textContent = this.opts.title || 'จัดหน้าเอกสาร';
+    document.getElementById('pe-grid').innerHTML = '';
     const status = document.getElementById('pe-status');
     document.getElementById('pe-save').disabled = true;
+    const items = this.opts.items || this.indices.map(i => list.items[i]);
     try {
-      for (const idx of indices) {
-        const item = list.items[idx];
+      for (const item of items) {
         status.textContent = `กำลังโหลด ${item.name}...`;
-        const bytes = new Uint8Array(await (await fetch(App.fileUrl(item.fileId))).arrayBuffer());
-        if (item.format === 'tif' || item.format === 'tiff') {
-          // Browsers cannot draw TIFF: decode every page to PNG and treat each page as an image
-          status.textContent = `กำลังแปลง TIFF ${item.name}...`;
-          for (const png of await App.tiffToPngs(bytes)) {
-            const sIdx = this.sources.push({ item, bytes: png, kind: 'image', imgType: 'png' }) - 1;
-            this.pages.push({ src: sIdx, index: 0, rotate: 0, thumb: URL.createObjectURL(new Blob([png], { type: 'image/png' })) });
-            this.render();
-          }
-          continue;
-        }
-        const src = { item, bytes, kind: item.format === 'pdf' ? 'pdf' : 'image', imgType: item.format === 'png' ? 'png' : 'jpg' };
-        const sIdx = this.sources.push(src) - 1;
-        if (src.kind === 'pdf') {
-          const pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
-          for (let i = 1; i <= pdf.numPages; i++) {
-            status.textContent = `กำลังสร้างภาพตัวอย่าง ${item.name} หน้า ${i}/${pdf.numPages}`;
-            const page = await pdf.getPage(i);
-            const vp1 = page.getViewport({ scale: 1 });
-            const vp = page.getViewport({ scale: 220 / Math.max(vp1.width, vp1.height) });
-            const canvas = document.createElement('canvas');
-            canvas.width = vp.width; canvas.height = vp.height;
-            await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
-            this.pages.push({ src: sIdx, index: i - 1, rotate: 0, thumb: canvas.toDataURL('image/jpeg', 0.7) });
-            this.render();
-          }
-        } else {
-          const url = URL.createObjectURL(new Blob([bytes], { type: item.format === 'png' ? 'image/png' : 'image/jpeg' }));
-          this.pages.push({ src: sIdx, index: 0, rotate: 0, thumb: url });
-          this.render();
-        }
+        const res = await fetch(App.fileUrl(item.fileId) + (this.opts.onSaved ? '&edit=1' : ''));
+        if (!res.ok) throw new Error(await res.text());
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        this.pages.push(...await this.loadPages(bytes, item.format, item.name, status));
+        this.render();
       }
       status.textContent = `${this.pages.length} หน้า`;
       document.getElementById('pe-save').disabled = false;
@@ -1217,33 +1256,115 @@ App.PageEditor = {
     }
   },
 
+  /** Page entries for a PDF / image / TIFF (thumbnails rendered here). */
+  loadPages: async function(bytes, format, name, status) {
+    const out = [];
+    format = (format || '').toLowerCase();
+    if (format === 'tif' || format === 'tiff') {
+      if (status) status.textContent = `กำลังแปลง TIFF ${name}...`;
+      for (const png of await App.tiffToPngs(bytes)) {
+        const s = this.sources.push({ bytes: png, kind: 'image', imgType: 'png' }) - 1;
+        out.push({ src: s, index: 0, rotate: 0, thumb: URL.createObjectURL(new Blob([png], { type: 'image/png' })) });
+      }
+      return out;
+    }
+    if (format !== 'pdf') {
+      const s = this.sources.push({ bytes, kind: 'image', imgType: format === 'png' ? 'png' : 'jpg' }) - 1;
+      out.push({ src: s, index: 0, rotate: 0, thumb: URL.createObjectURL(new Blob([bytes], { type: format === 'png' ? 'image/png' : 'image/jpeg' })) });
+      return out;
+    }
+    const s = this.sources.push({ bytes, kind: 'pdf' }) - 1;
+    const pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+    for (let i = 1; i <= pdf.numPages; i++) {
+      if (status) status.textContent = `กำลังสร้างภาพตัวอย่าง ${name} หน้า ${i}/${pdf.numPages}`;
+      const page = await pdf.getPage(i);
+      const vp1 = page.getViewport({ scale: 1 });
+      const vp = page.getViewport({ scale: 220 / Math.max(vp1.width, vp1.height) });
+      const canvas = document.createElement('canvas');
+      canvas.width = vp.width; canvas.height = vp.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+      out.push({ src: s, index: i - 1, rotate: 0, thumb: canvas.toDataURL('image/jpeg', 0.7) });
+    }
+    return out;
+  },
+
   render: function() {
     const grid = document.getElementById('pe-grid');
     grid.innerHTML = this.pages.map((p, i) => `
-      <div class="pe-card">
+      <div class="pe-card ${this.selected === i ? 'selected' : ''}" onclick="App.PageEditor.select(${i}, event)">
         <div class="pe-thumb"><img src="${p.thumb}" style="transform: rotate(${p.rotate}deg);"></div>
         <div class="pe-bar">
           <button title="ย้ายไปก่อนหน้า" onclick="App.PageEditor.move(${i}, -1)"><span class="material-icons-round">chevron_left</span></button>
           <button title="หมุนซ้าย" onclick="App.PageEditor.rotate(${i}, -90)"><span class="material-icons-round">rotate_left</span></button>
-          <span>หน้า ${i + 1}</span>
+          <span>หน้า ${i + 1}${p.inserted ? ' ✚' : ''}</span>
           <button title="หมุนขวา" onclick="App.PageEditor.rotate(${i}, 90)"><span class="material-icons-round">rotate_right</span></button>
           <button title="ย้ายไปถัดไป" onclick="App.PageEditor.move(${i}, 1)"><span class="material-icons-round">chevron_right</span></button>
         </div>
-        <button onclick="App.PageEditor.remove(${i})" style="border:none; background:#fef2f2; color:var(--danger); font-family:inherit; font-size:12px; font-weight:600; padding:5px; cursor:pointer;">ลบหน้านี้</button>
+        <div style="display:flex;">
+          <button onclick="App.PageEditor.pickReplace(${i})" style="flex:1; border:none; background:#eff6ff; color:var(--primary); font-family:inherit; font-size:12px; font-weight:600; padding:5px; cursor:pointer;">แทนที่</button>
+          <button onclick="App.PageEditor.remove(${i})" style="flex:1; border:none; background:#fef2f2; color:var(--danger); font-family:inherit; font-size:12px; font-weight:600; padding:5px; cursor:pointer;">ลบหน้า</button>
+        </div>
       </div>`).join('');
-    document.getElementById('pe-status').textContent = `${this.pages.length} หน้า`;
+    const sel = this.selected >= 0 ? ` · เลือกหน้า ${this.selected + 1} (หน้าใหม่จะแทรกต่อจากหน้านี้)` : ' · คลิกหน้าเพื่อเลือกตำแหน่งแทรก';
+    document.getElementById('pe-status').textContent = `${this.pages.length} หน้า${sel}`;
+  },
+  select: function(i, ev) {
+    if (ev && ev.target.closest('button')) return;
+    this.selected = this.selected === i ? -1 : i;
+    this.render();
   },
   rotate: function(i, deg) { this.pages[i].rotate = (this.pages[i].rotate + deg + 360) % 360; this.render(); },
   rotateAll: function(deg) { this.pages.forEach(p => p.rotate = (p.rotate + deg + 360) % 360); this.render(); },
-  reverse: function() { this.pages.reverse(); this.render(); },
+  reverse: function() { this.pages.reverse(); this.selected = -1; this.render(); },
   move: function(i, d) {
     const j = i + d;
     if (j < 0 || j >= this.pages.length) return;
     [this.pages[i], this.pages[j]] = [this.pages[j], this.pages[i]];
+    if (this.selected === i) this.selected = j;
     this.render();
   },
-  remove: function(i) { this.pages.splice(i, 1); this.render(); },
+  remove: function(i) {
+    this.pages.splice(i, 1);
+    if (this.selected >= this.pages.length) this.selected = this.pages.length - 1;
+    this.render();
+  },
   close: function() { document.getElementById('page-editor-modal').style.display = 'none'; },
+
+  /** "แทรกหน้าจากไฟล์": pages from other files go after the selected page (or at the end). */
+  pickInsert: function() { this.replaceAt = -1; document.getElementById('pe-insert-input').click(); },
+  /** "แทนที่": the chosen file's pages take the place of page i (e.g. a clearer rescan). */
+  pickReplace: function(i) { this.replaceAt = i; document.getElementById('pe-insert-input').click(); },
+
+  insertFiles: async function(input) {
+    const files = Array.from(input.files || []);
+    input.value = '';
+    if (!files.length) return;
+    const status = document.getElementById('pe-status');
+    try {
+      const added = [];
+      for (const file of files) {
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        const pages = await this.loadPages(new Uint8Array(await file.arrayBuffer()), ext, file.name, status);
+        pages.forEach(p => p.inserted = true);
+        added.push(...pages);
+      }
+      if (this.replaceAt >= 0) {
+        this.pages.splice(this.replaceAt, 1, ...added);
+        App.toast(`แทนที่หน้า ${this.replaceAt + 1} ด้วย ${added.length} หน้า`, 'success');
+        this.selected = this.replaceAt + added.length - 1;
+      } else {
+        const at = this.selected >= 0 ? this.selected + 1 : this.pages.length;
+        this.pages.splice(at, 0, ...added);
+        App.toast(`แทรก ${added.length} หน้าที่ตำแหน่งหน้า ${at + 1}`, 'success');
+        this.selected = at + added.length - 1;
+      }
+      this.replaceAt = -1;
+      this.render();
+    } catch (e) {
+      App.toast('อ่านไฟล์ไม่ได้: ' + e.message);
+      this.render();
+    }
+  },
 
   save: async function() {
     if (!this.pages.length) { App.toast('ต้องมีอย่างน้อย 1 หน้า'); return; }
@@ -1273,14 +1394,27 @@ App.PageEditor = {
       }
       // Classic xref (no object streams) so the server can stamp the QR code
       const bytes = await out.save({ useObjectStreams: false });
-      const first = this.list.items[this.indices[0]];
-      const name = first.name.replace(/\.[^.]+$/, '') + (this.indices.length > 1 ? '_รวม' : '_แก้ไข') + '.pdf';
+      const items = this.opts.items || this.indices.map(i => this.list.items[i]);
+      const first = items[0];
+      const name = first.name.replace(/\.[^.]+$/, '') + (items.length > 1 ? '_รวม' : '_แก้ไข') + '.pdf';
       const file = new File([bytes], name, { type: 'application/pdf' });
       App.showLoader('กำลังอัปโหลดไฟล์ที่จัดหน้าแล้ว...');
+
+      if (this.opts.onSaved) {
+        // Existing document file: the caller turns the upload into a new version
+        const res = await App.uploadFile(file, p => App.showLoader(`กำลังอัปโหลด... ${p}%`), null, 'edit');
+        await this.opts.onSaved(res, this.pages.length);
+        App.hideLoader();
+        this.close();
+        return;
+      }
+
       const single = this.indices.length === 1;
-      const res = await App.uploadFile(file, p => App.showLoader(`กำลังอัปโหลด... ${p}%`), single ? first.fileId : null);
+      const res = await App.uploadFile(file, p => App.showLoader(`กำลังอัปโหลด... ${p}%`), single ? first.fileId : null, this.list.context);
       if (!single) this.indices.forEach(i => App.discardStaged(this.list.items[i].fileId));
-      this.list.replace(this.indices, { fileId: res.fileId, name: res.name, size: res.size, format: 'pdf' });
+      const item = { fileId: res.fileId, name: res.name, size: res.size, format: 'pdf', duplicates: [] };
+      this.list.replace(this.indices, item);
+      if (App.Quality) App.Quality.check(item, this.list);
       App.hideLoader();
       this.close();
       App.toast(`บันทึกแล้ว ${this.pages.length} หน้า`, 'success');
@@ -1299,6 +1433,7 @@ App.Upload = {
   staged: new StagedList('upload', 'upload-staged'),
   init: function() {
     App.DocForm.render('upload');
+    this.staged.expectedPagesFn = () => parseInt(document.getElementById('uploadExpected')?.value, 10) || null;
     this.staged.render();
     const limit = document.getElementById('upload-limit');
     if (limit) limit.textContent = App.fmtBytes(App.data.settings.uploadLimitBytes);
@@ -1331,8 +1466,10 @@ App.Scanner = {
 
   init: function() {
     App.DocForm.render('scan');
+    this.staged.expectedPagesFn = () => parseInt(document.getElementById('scanExpected')?.value, 10) || null;
     this.staged.render();
     this.checkStatus();
+    if (App.ScanExtra) App.ScanExtra.init();
     // After a reload: pick up a running job and scanned files that were not saved yet
     App.api('api/scan.php', { action: 'resume' }).then(r => {
       const before = this.staged.items.length;
@@ -1400,6 +1537,7 @@ App.Scanner = {
       ocr: document.getElementById('scanOcr').checked,
       splitPatchT: document.getElementById('scanPatchT').checked,
       pdfa: document.getElementById('scanPdfa').checked,
+      jpegQuality: document.getElementById('scanJpegQuality') ? document.getElementById('scanJpegQuality').value : '',
     };
     App.api('api/scan.php', body).then(res => {
       this.jobId = res.jobId;
@@ -1463,7 +1601,8 @@ App.Settings = {
     if (name === 'fields') this.renderFields();
     if (name === 'users') App.Users.load();
     if (name === 'system') this.loadSystem();
-    if (name === 'storage') { this.loadStorage(); this.loadBackups(); }
+    if (name === 'storage') { this.loadStorage(); this.loadBackups(); if (App.SettingsExtra) App.SettingsExtra.loadIntegrity(); }
+    if (App.SettingsExtra && App.SettingsExtra[name]) App.SettingsExtra[name]();
   },
   call: function(body, okMsg) {
     return App.api('api/settings.php', body).then(res => { if (okMsg) App.toast(okMsg, 'success'); return res; })
@@ -1762,6 +1901,7 @@ App.Users = {
           <td style="text-align:right; white-space:nowrap;">
             ${u.Role !== 'admin' ? `<button class="btn btn-outline btn-icon" onclick="App.Users.openFolderAccess(${u.ID})" title="กำหนดแฟ้มที่เข้าถึงได้"><span class="material-icons-round" style="font-size:17px;">folder_shared</span></button>` : ''}
             ${u.Locked ? `<button class="btn btn-outline btn-icon" onclick="App.Users.unlock(${u.ID})" title="ปลดล็อก"><span class="material-icons-round" style="font-size:17px;">lock_open</span></button>` : ''}
+            ${u.TotpEnabled ? `<button class="btn btn-outline btn-icon" onclick="App.Users.reset2fa(${u.ID})" title="ล้างการยืนยันสองขั้น (ผู้ใช้ทำโทรศัพท์หาย)"><span class="material-icons-round" style="font-size:17px;">phonelink_erase</span></button>` : ''}
             <button class="btn btn-outline btn-icon" onclick="App.Account.openPasswordModal(${u.ID})" title="ตั้งรหัสผ่านใหม่"><span class="material-icons-round" style="font-size:17px;">password</span></button>
             ${isMe ? '' : `<button class="btn btn-outline btn-icon" style="color:var(--danger);" onclick="App.Users.remove(${u.ID})" title="ลบผู้ใช้"><span class="material-icons-round" style="font-size:17px;">delete</span></button>`}
           </td>
@@ -1786,6 +1926,13 @@ App.Users = {
       App.toast("เปลี่ยนสิทธิ์แล้ว", "success");
       this.load();
     }).catch(e => { App.toast(e.message); this.render(); });
+  },
+  reset2fa: async function(id) {
+    const u = this.list.find(x => x.ID === id);
+    if (!await App.Dialog.confirm({ title: 'ล้างการยืนยันสองขั้น?', icon: 'phonelink_erase', tone: 'warning',
+      message: `"${u.Username}" จะเข้าระบบด้วยรหัสผ่านอย่างเดียว และต้องตั้งค่าแอปยืนยันตัวตนใหม่`,
+      note: 'ใช้เมื่อผู้ใช้ทำโทรศัพท์หายและไม่มีรหัสกู้คืน · ผู้ใช้จะถูกออกจากระบบทุกอุปกรณ์', confirmText: 'ล้างการยืนยันสองขั้น' })) return;
+    App.api('api/security.php', { action: 'resetUser2fa', ID: id }).then(() => { App.toast('ล้างการยืนยันสองขั้นแล้ว', 'success'); this.load(); }).catch(e => App.toast(e.message));
   },
   unlock: function(id) {
     App.api('api/users.php', { action: 'unlock', ID: id }).then(() => { App.toast("ปลดล็อกบัญชีแล้ว", "success"); this.load(); }).catch(e => App.toast(e.message));
