@@ -416,7 +416,7 @@ mysql -u root -p -e "CREATE DATABASE dms_system CHARACTER SET utf8mb4 COLLATE ut
 
 ---
 
-## 10. โครงสร้างโปรเจกต์ (สำหรับโปรแกรมเมอร์)
+## 10. โครงสร้างโปรเจกต์ 
 
 ### 10.1 โครงสร้างไฟล์
 
