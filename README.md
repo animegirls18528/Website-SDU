@@ -136,21 +136,6 @@ Website-SDU/
 
 ---
 
-## 🚀 ความต้องการของระบบ (Prerequisites)
-
-> ⚠️ **หมายเหตุสำหรับการนำไป Hosting:** ระบบนี้ออกแบบมาสำหรับ Traditional Web Server (เช่น Shared Hosting, VPS หรือ XAMPP) **ไม่รองรับ Serverless Platform อย่าง Vercel** เนื่องจากเก็บไฟล์เอกสารใน Local File System (`uploads/`) และรันงานเบื้องหลังด้วย PHP CLI (session เก็บในฐานข้อมูลแล้ว แต่ไฟล์และงานเบื้องหลังยังต้องใช้เครื่องเซิร์ฟเวอร์ปกติ)
-
-1. **Web Server**: Apache บน XAMPP หรือ IIS
-2. **PHP**: เวอร์ชัน 7.4 ขึ้นไป (แนะนำ PHP 8.x) พร้อม Extensions:
-   - `pdo_mysql`
-   - `gd`
-   - `fileinfo`
-   - `mbstring`
-3. **Database**: MySQL หรือ MariaDB
-4. **Composer**: สำหรับติดตั้ง PHP dependencies
-5. **(ตัวเลือก)** อุปกรณ์สแกนเอกสาร:
-   - เครื่องสแกนเอกสาร **Canon imageFORMULA DR-G2110** (ติดตั้ง Driver TWAIN เรียบร้อย)
-   - โปรแกรม **NAPS2 (Desktop)** ติดตั้งที่เครื่อง Server (จำเป็นสำหรับการใช้งานเมนูสแกนผ่านระบบ)
 
 ---
 
