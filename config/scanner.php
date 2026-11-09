@@ -15,7 +15,7 @@ define('NAPS2_CONSOLE_PATH', 'C:\\Program Files\\NAPS2\\NAPS2.Console.exe');
 
 // Scanner device name (ตรงกับชื่อที่ปรากฏใน TWAIN driver)
 // ดูชื่อเครื่องได้จาก: NAPS2.Console.exe --listdevices --driver twain
-define('SCANNER_DEVICE_NAME', 'CANON DR-G2110');
+define('SCANNER_DEVICE_NAME', 'Canon DR-G2110 TWAIN');
 
 // Default scan settings
 define('SCANNER_DEFAULTS', json_encode([

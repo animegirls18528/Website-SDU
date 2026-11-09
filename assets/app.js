@@ -1502,7 +1502,7 @@ App.Scanner = {
     App.api('api/scan.php', { action: 'listDevices' }).then(d => {
       App.hideLoader();
       const sel = document.getElementById('scanDevice');
-      sel.innerHTML = `<option value="">ค่าเริ่มต้น (CANON DR-G2110 · TWAIN)</option>` + d.devices.map(x =>
+      sel.innerHTML = `<option value="">ค่าเริ่มต้น (Canon DR-G2110 TWAIN)</option>` + d.devices.map(x =>
         `<option value="${App.escapeHtml(JSON.stringify(x))}">${App.escapeHtml(x.name)} · ${x.driver.toUpperCase()}</option>`).join('');
       App.toast(d.devices.length ? `พบ ${d.devices.length} เครื่อง` : 'ไม่พบเครื่องสแกน', d.devices.length ? 'success' : 'info');
     }).catch(e => { App.hideLoader(); App.toast(e.message); });

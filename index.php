@@ -470,7 +470,7 @@ $v = fn($f) => $f . '?v=' . @filemtime(__DIR__ . '/' . $f);
             <div class="form-group" style="margin:0; grid-column: span 2;">
               <label style="font-size:12.5px; color:var(--text-muted);">เครื่องสแกน</label>
               <div style="display:flex; gap:8px;">
-                <select id="scanDevice" class="form-control" style="font-size:13.5px; padding:9px 12px;"><option value="">ค่าเริ่มต้น (CANON DR-G2110 · TWAIN)</option></select>
+                <select id="scanDevice" class="form-control" style="font-size:13.5px; padding:9px 12px;"><option value="">ค่าเริ่มต้น (Canon DR-G2110 TWAIN)</option></select>
                 <button class="btn btn-outline" style="padding:6px 10px; white-space:nowrap; font-size:12.5px;" onclick="App.Scanner.listDevices()">ค้นหาเครื่อง</button>
               </div>
             </div>
