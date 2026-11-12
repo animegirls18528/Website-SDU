@@ -243,7 +243,7 @@ App.ScanExtra = {
     if (!p) return;
     const o = p.Options;
     const set = (elId, v) => { const el = document.getElementById(elId); if (el && v !== undefined && v !== '') el.value = String(v); };
-    const chk = (elId, v) => { const el = document.getElementById(elId); if (el && v !== undefined) el.checked = !!v; };
+    const chk = (elId, v) => { const el = document.getElementById(elId); if (el && !el.disabled && v !== undefined) el.checked = !!v; };
     set('scanDpi', o.dpi); set('scanColorMode', o.colorMode); set('scanSource', o.source); set('scanFormat', o.format || 'pdf'); set('scanPageSize', o.pageSize);
     set('scanJpegQuality', o.jpegQuality || '');
     chk('scanDeskew', o.deskew); chk('scanSkipBlank', o.skipBlank); chk('scanOcr', o.ocr); chk('scanPdfa', o.pdfa);

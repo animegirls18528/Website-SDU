@@ -22,7 +22,8 @@ $step = function ($name, $pass, $detail = '') use (&$steps, &$ok) {
     $steps[] = ['step' => $name, 'ok' => $pass, 'detail' => $detail];
     if (!$pass) $ok = false;
 };
-$testDb = 'edms_restore_test';
+$testDb = 'edms_restore_test_' . bin2hex(random_bytes(8));
+$testDbCreated = false;
 
 try {
     // Newest finished backup set
@@ -48,9 +49,9 @@ try {
     $step('ไฟล์ฐานข้อมูลไม่เสียหาย', $bytes > 0, number_format($bytes) . ' ไบต์');
 
     // 2. import into a throw-away database
-    $pdo->exec("DROP DATABASE IF EXISTS `$testDb`");
     $pdo->exec("CREATE DATABASE `$testDb` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
-    $cmd = [MYSQL_PATH, '--host=' . $host, '--user=' . $username, '--default-character-set=utf8mb4', $testDb];
+    $testDbCreated = true;
+    $cmd = [MYSQL_PATH, '--host=' . $host, '--port=' . $port, '--user=' . $username, '--default-character-set=utf8mb4', $testDb];
     if ($password !== '') array_splice($cmd, 3, 0, '--password=' . $password);
     $proc = proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
     $gz = gzopen("$set/database.sql.gz", 'rb');
@@ -96,7 +97,9 @@ try {
 } catch (Throwable $e) {
     $step('ทดลองกู้คืน', false, $e->getMessage());
 } finally {
-    try { $pdo->exec("DROP DATABASE IF EXISTS `$testDb`"); } catch (Throwable $e) {}
+    if ($testDbCreated) {
+        try { $pdo->exec("DROP DATABASE `$testDb`"); } catch (Throwable $e) {}
+    }
 }
 
 $problems = count(array_filter($steps, fn($s) => !$s['ok']));

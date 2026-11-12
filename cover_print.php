@@ -28,7 +28,7 @@ if ($ids) {
     }
 }
 $org = getSetting($pdo, 'org_name', 'กองคลัง');
-$qrOptions = new QROptions(['outputType' => QRCode::OUTPUT_IMAGE_PNG, 'eccLevel' => QRCode::ECC_M, 'scale' => 8]);
+$qrOptions = new QROptions(['outputType' => QRCode::OUTPUT_MARKUP_SVG, 'eccLevel' => QRCode::ECC_M, 'scale' => 8]);
 $h = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
 $thaiDate = fn($d) => $d ? date('j/n/', strtotime($d)) . (date('Y', strtotime($d)) + 543) : '-';
 ?>

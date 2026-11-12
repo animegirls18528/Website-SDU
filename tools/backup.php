@@ -26,7 +26,7 @@ file_put_contents("$dir/manifest.json", json_encode($status, JSON_PRETTY_PRINT))
 try {
     // 1) database
     $sqlFile = "$dir/database.sql";
-    $cmd = [MYSQLDUMP_PATH, '--host=' . $host, '--user=' . $username, '--single-transaction', '--routines',
+    $cmd = [MYSQLDUMP_PATH, '--host=' . $host, '--port=' . $port, '--user=' . $username, '--single-transaction', '--routines',
             '--default-character-set=utf8mb4', '--result-file=' . $sqlFile, $dbname];
     if ($password !== '') array_splice($cmd, 3, 0, '--password=' . $password);
     $p = proc_open($cmd, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);

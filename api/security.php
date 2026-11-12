@@ -43,7 +43,7 @@ try {
             $secret = totpGenerateSecret();
             $_SESSION['totp_setup'] = ['secret' => $secret, 'time' => time()];
             $uri = totpUri($secret, $u['Username'], 'EDMS ' . getSetting($pdo, 'org_name', ''));
-            $qr = (new QRCode(new QROptions(['outputType' => QRCode::OUTPUT_IMAGE_PNG, 'eccLevel' => QRCode::ECC_M, 'scale' => 6])))->render($uri);
+            $qr = (new QRCode(new QROptions(['outputType' => QRCode::OUTPUT_MARKUP_SVG, 'eccLevel' => QRCode::ECC_M, 'scale' => 6])))->render($uri);
             echo json_encode(['success' => true, 'secret' => trim(chunk_split($secret, 4, ' ')), 'qr' => $qr]);
             break;
 

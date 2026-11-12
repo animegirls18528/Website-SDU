@@ -1490,9 +1490,17 @@ App.Scanner = {
     };
     set('#f8fafc', 'var(--border)', 'hourglass_top', '#64748b', 'กำลังตรวจสอบเครื่องสแกน...');
     App.api('api/scan.php', { action: 'checkStatus' }).then(d => {
+      const defaultOption = document.querySelector('#scanDevice option[value=""]');
+      if (defaultOption) defaultOption.textContent = `ค่าเริ่มต้น (${d.scannerDevice} · ${d.defaults.driver.toUpperCase()})`;
+      this.defaultDevice = d.scannerDevice;
+      this.defaultDriver = d.defaults.driver;
       const queue = d.queue ? ` · มีงานในคิว ${d.queue} งาน` : '';
+      const found = d.detectedDevices || [];
       if (!d.naps2Installed) set('#fef2f2', '#fecaca', 'error_outline', '#dc2626', 'ไม่พบ NAPS2 บนเซิร์ฟเวอร์ — ติดตั้งจาก naps2.com/download');
-      else if (d.detectedDevices && d.detectedDevices.length) set('#f0fdf4', '#a7f3d0', 'cast_connected', '#047857', `พร้อมสแกน — พบ ${d.detectedDevices.length} เครื่อง${queue}`);
+      else if (d.scannerBusy) set('#eff6ff', '#bfdbfe', 'sync', '#1d4ed8', 'เครื่องสแกนกำลังสแกนอยู่' + queue);
+      else if (d.configuredFound) set('#f0fdf4', '#a7f3d0', 'cast_connected', '#047857', `พร้อมสแกน — พบ ${d.scannerDevice}${queue}`);
+      else if (found.length) set('#fffbeb', '#fcd34d', 'warning', '#92400e', `ไม่พบ ${d.scannerDevice} แต่พบเครื่องอื่น ${found.length} เครื่อง — กดค้นหาเครื่องแล้วเลือกเครื่องที่จะใช้${queue}`);
+      else if (d.detectError) set('#fef2f2', '#fecaca', 'error_outline', '#dc2626', `ค้นหาเครื่องสแกนไม่สำเร็จ: ${d.detectError}${queue}`);
       else set('#fffbeb', '#fcd34d', 'warning', '#92400e', 'ติดตั้ง NAPS2 แล้ว แต่ไม่พบเครื่องสแกน — ตรวจสอบสาย USB และเปิดเครื่อง' + queue);
     }).catch(() => set('#fef2f2', '#fecaca', 'cloud_off', '#dc2626', 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้'));
   },
@@ -1502,9 +1510,11 @@ App.Scanner = {
     App.api('api/scan.php', { action: 'listDevices' }).then(d => {
       App.hideLoader();
       const sel = document.getElementById('scanDevice');
-      sel.innerHTML = `<option value="">ค่าเริ่มต้น (Canon DR-G2110 TWAIN)</option>` + d.devices.map(x =>
+      sel.innerHTML = `<option value="">ค่าเริ่มต้น (${App.escapeHtml(this.defaultDevice || 'CANON DR-G2110')} · ${(this.defaultDriver || 'twain').toUpperCase()})</option>` + d.devices.map(x =>
         `<option value="${App.escapeHtml(JSON.stringify(x))}">${App.escapeHtml(x.name)} · ${x.driver.toUpperCase()}</option>`).join('');
-      App.toast(d.devices.length ? `พบ ${d.devices.length} เครื่อง` : 'ไม่พบเครื่องสแกน', d.devices.length ? 'success' : 'info');
+      const errs = Object.entries(d.errors || {}).map(([drv, msg]) => `${drv.toUpperCase()}: ${msg}`);
+      if (d.devices.length) App.toast(`พบ ${d.devices.length} เครื่อง`, 'success');
+      else App.toast(errs.length ? 'ไม่พบเครื่องสแกน — ' + errs.join(' · ') : 'ไม่พบเครื่องสแกน', 'info');
     }).catch(e => { App.hideLoader(); App.toast(e.message); });
   },
 
@@ -1520,13 +1530,13 @@ App.Scanner = {
   },
 
   startScan: function() {
-    if (this.jobId) { App.toast('มีงานสแกนที่กำลังทำงานอยู่', 'info'); return; }
+    if (this.jobId || this.starting) { App.toast('มีงานสแกนที่กำลังทำงานอยู่', 'info'); return; }
     const device = document.getElementById('scanDevice').value;
     const dev = device ? JSON.parse(device) : null;
     const body = {
       action: 'start',
       device: dev ? dev.name : '',
-      driver: dev ? dev.driver : 'twain',
+      driver: dev ? dev.driver : undefined,
       dpi: parseInt(document.getElementById('scanDpi').value, 10),
       colorMode: document.getElementById('scanColorMode').value,
       source: document.getElementById('scanSource').value,
@@ -1539,11 +1549,18 @@ App.Scanner = {
       pdfa: document.getElementById('scanPdfa').checked,
       jpegQuality: document.getElementById('scanJpegQuality') ? document.getElementById('scanJpegQuality').value : '',
     };
+    this.starting = true;
+    this.showProgress(true, 'กำลังส่งคำสั่งสแกน...', '');
     App.api('api/scan.php', body).then(res => {
+      this.starting = false;
       this.jobId = res.jobId;
       this.showProgress(true, res.ahead ? `รอคิว (มีงานก่อนหน้า ${res.ahead} งาน)` : 'กำลังเริ่มสแกน...', 'ทำงานเบื้องหลัง สามารถกรอกข้อมูลเอกสารระหว่างรอได้', !!res.ahead);
       this.poll();
-    }).catch(e => App.toast('สั่งสแกนไม่สำเร็จ: ' + e.message));
+    }).catch(e => {
+      this.starting = false;
+      this.showProgress(false);
+      App.toast('สั่งสแกนไม่สำเร็จ: ' + e.message);
+    });
   },
 
   poll: function() {

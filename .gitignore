@@ -3,3 +3,6 @@ uploads/*
 !uploads/.htaccess
 .env
 config/local.php
+tools/scanner-runtime/
+.github-publish/
+.qa-runtime/

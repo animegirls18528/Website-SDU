@@ -103,16 +103,20 @@ function ensureVerifyToken($pdo, $docId) {
 /** Write $dest = $src with a verification QR code in the bottom-right corner of every page. */
 function stampQrCode($src, $dest, $url, $label) {
     $options = new QROptions([
-        'outputType' => QRCode::OUTPUT_IMAGE_PNG,
+        'outputType' => QRCode::OUTPUT_FPDF,
         'eccLevel'   => QRCode::ECC_M,
         'scale'      => 5,
         'outputBase64' => false,
     ]);
-    $tmpQr = tempnam(sys_get_temp_dir(), 'qr_') . '.png';
-    file_put_contents($tmpQr, (new QRCode($options))->render($url));
+    $tmpQr = tempnam(sys_get_temp_dir(), 'qr_');
 
     try {
+        if ($tmpQr === false) throw new RuntimeException('Cannot create temporary QR file');
+        // Vector PDF output works without ext-gd and stays sharp when printed.
+        file_put_contents($tmpQr, (new QRCode($options))->render($url));
         $pdf = new Fpdi();
+        $pdf->setSourceFile($tmpQr);
+        $qrTemplate = $pdf->importPage(1);
         // The label under the QR sits inside FPDF's default bottom margin; without this every page gets a blank page after it
         $pdf->SetAutoPageBreak(false);
         $pageCount = $pdf->setSourceFile($src);
@@ -125,7 +129,7 @@ function stampQrCode($src, $dest, $url, $label) {
             $qrSize = 22;
             $x = $size['width'] - $qrSize - 8;
             $y = $size['height'] - $qrSize - 10;
-            $pdf->Image($tmpQr, $x, $y, $qrSize, $qrSize, 'PNG');
+            $pdf->useTemplate($qrTemplate, $x, $y, $qrSize, $qrSize);
             $pdf->SetFont('Arial', '', 7);
             $pdf->SetTextColor(100, 100, 100);
             $pdf->SetXY($x - 4, $y + $qrSize + 0.5);
@@ -137,7 +141,7 @@ function stampQrCode($src, $dest, $url, $label) {
         error_log("QR stamp failed for $src: " . $e->getMessage());
         return false;
     } finally {
-        @unlink($tmpQr);
+        if ($tmpQr !== false) @unlink($tmpQr);
     }
 }
 

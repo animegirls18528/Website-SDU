@@ -7,7 +7,7 @@
 
 require_once __DIR__ . '/migrate_v5.php';
 
-const EDMS_SCHEMA_VERSION = 5;
+const EDMS_SCHEMA_VERSION = 6;
 
 /** Empty database: create the base schema from schema.sql (equivalent to version 4). */
 function edmsInstallFresh(PDO $pdo) {
@@ -52,11 +52,17 @@ function edmsMigrate(PDO $pdo) {
         if ($current < 3) edmsMigrateV3($pdo);
         if ($current < 4) edmsMigrateV4($pdo);
         if ($current < 5) edmsMigrateV5($pdo);
+        if ($current < 6) edmsMigrateV6($pdo);
         $pdo->prepare("INSERT INTO system_settings (SettingKey, SettingValue) VALUES ('edms_schema_version', ?)
                        ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue)")->execute([EDMS_SCHEMA_VERSION]);
     } finally {
         if ($got) $pdo->query("SELECT RELEASE_LOCK('edms_migrate')");
     }
+}
+
+/** Legacy installations created before folder ordering did not have this column. */
+function edmsMigrateV6(PDO $pdo) {
+    edmsAddColumn($pdo, 'folders', 'SortOrder', 'INT NULL');
 }
 
 function edmsMigrateV1(PDO $pdo) {

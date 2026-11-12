@@ -22,10 +22,15 @@ require_once '../config/database.php';
 require_once '../config/helpers.php';
 require_once '../config/storage.php';
 require_once '../config/scanner.php';
+require_once '../config/scanner_detect.php';
 
 $input = json_decode(file_get_contents('php://input'), true) ?: [];
 $action = $input['action'] ?? $_GET['action'] ?? '';
 $me = (int)$_SESSION['user_id'];
+
+if (in_array($action, ['start', 'cancel'], true) && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+    jsonFail(405, 'ต้องใช้ POST เพื่อสั่งหรือยกเลิกงานสแกน');
+}
 
 if ($action !== 'checkStatus' && $action !== 'getScanSettings' && !canEdit()) {
     jsonFail(403, 'บัญชีนี้มีสิทธิ์ดูเอกสารเท่านั้น');
@@ -39,17 +44,19 @@ function failStaleJobs($pdo) {
         ->execute([SCAN_TIMEOUT + 120, SCAN_TIMEOUT * 3 + 300]);
 }
 
-function listDevices($driver) {
-    $out = [];
-    exec('"' . NAPS2_CONSOLE_PATH . '" --listdevices --driver ' . escapeshellarg($driver) . ' 2>&1', $out);
-    return array_values(array_filter(array_map('trim', $out), 'strlen'));
+/** A scan in progress holds the TWAIN session; probing the driver then can fail or disturb the scan. */
+function scanRunning($pdo) {
+    return (int)$pdo->query("SELECT COUNT(*) FROM scan_jobs WHERE Status = 'running'")->fetchColumn() > 0;
 }
+
+// Device names come from the console code page and may not be valid UTF-8
+const SCAN_JSON = JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE;
 
 switch ($action) {
 
     case 'checkStatus':
         failStaleJobs($pdo);
-        $naps2Exists = file_exists(NAPS2_CONSOLE_PATH);
+        $naps2Exists = is_file(NAPS2_CONSOLE_PATH);
         $result = [
             'success' => true,
             'naps2Installed' => $naps2Exists,
@@ -57,23 +64,33 @@ switch ($action) {
             'defaults' => json_decode(SCANNER_DEFAULTS, true),
             'queue' => (int)$pdo->query("SELECT COUNT(*) FROM scan_jobs WHERE Status IN ('queued','running')")->fetchColumn(),
         ];
-        if ($naps2Exists) {
-            $result['detectedDevices'] = listDevices('twain');
-            $result['scannerReady'] = !empty($result['detectedDevices']);
+        if ($naps2Exists && scanRunning($pdo)) {
+            $result['scannerBusy'] = true;
+        } elseif ($naps2Exists) {
+            $found = detectScanners([SCANNER_DEFAULT_DRIVER], 15)[SCANNER_DEFAULT_DRIVER];
+            $result['detectedDevices'] = $found['devices'];
+            $result['detectError'] = $found['error'];
+            // Ready only when the configured scanner itself is there, not just any TWAIN source
+            $result['configuredFound'] = (bool)array_filter($found['devices'], fn($n) => deviceNameMatches($n, SCANNER_DEVICE_NAME));
+            $result['scannerReady'] = $result['configuredFound'];
         }
-        echo json_encode($result);
+        echo json_encode($result, SCAN_JSON);
         break;
 
     case 'listDevices':
-        if (!file_exists(NAPS2_CONSOLE_PATH)) {
-            echo json_encode(['success' => false, 'message' => 'ไม่พบ NAPS2 Console กรุณาติดตั้งก่อน']);
-            break;
+        if (!is_file(NAPS2_CONSOLE_PATH)) {
+            jsonFail(400, 'ไม่พบ NAPS2 Console กรุณาติดตั้งก่อน');
+        }
+        if (scanRunning($pdo)) {
+            jsonFail(409, 'เครื่องสแกนกำลังสแกนอยู่ - รอให้งานสแกนเสร็จก่อนค้นหาเครื่อง');
         }
         $all = [];
-        foreach (['twain', 'wia', 'escl'] as $driver) {
-            foreach (listDevices($driver) as $name) $all[] = ['name' => $name, 'driver' => $driver];
+        $errors = [];
+        foreach (detectScanners(['twain', 'wia', 'escl'], 25) as $driver => $found) {
+            foreach ($found['devices'] as $name) $all[] = ['name' => $name, 'driver' => $driver];
+            if ($found['error'] !== null) $errors[$driver] = $found['error'];
         }
-        echo json_encode(['success' => true, 'devices' => $all]);
+        echo json_encode(['success' => true, 'devices' => $all, 'errors' => (object)$errors], SCAN_JSON);
         break;
 
     case 'start':
@@ -93,7 +110,7 @@ switch ($action) {
             'format'      => $pick('format', ['pdf', 'png', 'jpg', 'tiff']),
             'pageSize'    => $pick('pageSize', ['a4', 'letter', 'legal', 'a3']),
             'deskew'      => (bool)($input['deskew'] ?? $d['deskew']),
-            'skipBlank'   => (bool)($input['skipBlank'] ?? $d['skipBlank']),
+            'skipBlank'   => false, // Not exposed by NAPS2 Console when using --noprofile.
             'ocr'         => (bool)($input['ocr'] ?? $d['ocr']),
             'splitPatchT' => (bool)($input['splitPatchT'] ?? $d['splitPatchT']),
             'pdfa'        => (bool)($input['pdfa'] ?? $d['pdfa']),
@@ -111,6 +128,7 @@ switch ($action) {
         break;
 
     case 'jobStatus':
+        failStaleJobs($pdo);
         $stmt = $pdo->prepare("SELECT ID, UserID, Status, Options, Files, Message, CreatedAt, StartedAt, FinishedAt FROM scan_jobs WHERE ID = ?");
         $stmt->execute([(int)($input['jobId'] ?? 0)]);
         $job = $stmt->fetch();

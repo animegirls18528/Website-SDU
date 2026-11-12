@@ -16,3 +16,7 @@ putenv('DB_PASS=');
 // define('SIGN_KEY_DIR', 'D:\\edms_keys');           // digital-signature key, keep OUTSIDE htdocs
 // define('OPENSSL_CONF_PATH', 'C:/xampp/php/extras/ssl/openssl.cnf');
 // define('PHP_CLI_PATH', 'C:\\xampp\\php\\php.exe');
+// Scanner: choose the driver and name reported by NAPS2 --listdevices.
+// define('SCANNER_DEFAULT_DRIVER', 'wia');
+// define('SCANNER_DEVICE_NAME', 'CANON DR-G2110 USB');
+// define('NAPS2_CONSOLE_PATH', 'C:\\Program Files\\NAPS2\\NAPS2.Console.exe');

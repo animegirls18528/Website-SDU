@@ -513,3 +513,17 @@ Website-SDU/
 - **ระเบียบสารบรรณ:** `destruction_batches`, `destruction_items`
 - **ตรวจไฟล์:** `integrity_runs`
 - `legacy_documents` / `legacy_folders`: ข้อมูลที่นำเข้าจากระบบเดิม (ถ้ามี)
+
+### 10.4 ทดสอบระบบแบบแยกข้อมูล
+
+ติดตั้งไลบรารีด้วย `composer install` และเปิด PHP extension `zip` สำหรับสำรอง/กู้คืน จากนั้นรัน:
+
+```powershell
+python tools/system_smoke.py --php C:/xampp/php/php.exe
+```
+
+ชุดทดสอบสร้างฐานข้อมูลชื่อ `edms_qa_*` และสำเนาเว็บใน `.qa-runtime/` ใช้บัญชีจำลองสำหรับทดสอบสิทธิ์ เอกสาร PDF/QR เวอร์ชันไฟล์ ลายน้ำ PDPA เวิร์กโฟลว์ ค้นหา ยืมคืน ใบปะหน้า รายงาน ลิงก์ผู้ตรวจ Agent 2FA ถังขยะ การทำลายเอกสาร ลายมือชื่อดิจิทัล และสำรอง/กู้คืน ผลและ log อยู่ใน `.qa-runtime/run_*/results.json` และ `server.log` ชุดทดสอบไม่สั่งเครื่องสแกนจริง และเก็บข้อมูลทดสอบไว้ให้ตรวจภายหลัง การทดสอบ OCR และเครื่องสแกนเครือข่ายต้องมีอุปกรณ์และชุดภาษาที่พร้อมใช้งานเพิ่มเติม
+
+เครื่อง Canon DR-G2110 ที่ต่อ USB สามารถเลือก WIA ได้ โดยกำหนด `SCANNER_DEFAULT_DRIVER` เป็น `wia` และ `SCANNER_DEVICE_NAME` ให้ตรงกับผล `NAPS2.Console.exe --listdevices --driver wia` ใน `config/local.php` ดูตัวอย่างใน `config/local.example.php` ส่วน NAPS2 Portable วางได้ที่ `tools/scanner-runtime/naps2/App/NAPS2.Console.exe` โปรแกรมและค่าของแต่ละเครื่องไม่ขึ้น Git
+
+ระบบใช้ QR แบบ vector PDF/SVG จึงไม่ต้องเปิด GD สำหรับประทับเอกสาร ใบปะหน้า และ QR ตั้งค่า 2FA ส่วนการข้ามหน้าว่างยังไม่รองรับในโหมดคำสั่งจากเว็บ

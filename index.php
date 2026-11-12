@@ -470,7 +470,7 @@ $v = fn($f) => $f . '?v=' . @filemtime(__DIR__ . '/' . $f);
             <div class="form-group" style="margin:0; grid-column: span 2;">
               <label style="font-size:12.5px; color:var(--text-muted);">เครื่องสแกน</label>
               <div style="display:flex; gap:8px;">
-                <select id="scanDevice" class="form-control" style="font-size:13.5px; padding:9px 12px;"><option value="">ค่าเริ่มต้น (Canon DR-G2110 TWAIN)</option></select>
+                <select id="scanDevice" class="form-control" style="font-size:13.5px; padding:9px 12px;"><option value="">ค่าเริ่มต้น (CANON DR-G2110 · TWAIN)</option></select>
                 <button class="btn btn-outline" style="padding:6px 10px; white-space:nowrap; font-size:12.5px;" onclick="App.Scanner.listDevices()">ค้นหาเครื่อง</button>
               </div>
             </div>
@@ -530,7 +530,7 @@ $v = fn($f) => $f . '?v=' . @filemtime(__DIR__ . '/' . $f);
 
           <div style="border:1.5px solid var(--border); border-radius:12px; padding:6px 14px; margin:12px 0 16px;">
             <label class="check-row"><input type="checkbox" id="scanDeskew" checked><div>ปรับภาพเอียงให้ตรงอัตโนมัติ</div></label>
-            <label class="check-row"><input type="checkbox" id="scanSkipBlank" checked><div>ข้ามหน้าว่าง<small>เช่น ด้านหลังที่ไม่มีข้อความเมื่อสแกน 2 หน้า</small></div></label>
+            <label class="check-row"><input type="checkbox" id="scanSkipBlank" disabled><div>ข้ามหน้าว่าง<small>ยังไม่รองรับการสั่งผ่านเว็บ กรุณาตรวจและลบหน้าว่างจากไฟล์หลังสแกน</small></div></label>
             <label class="check-row"><input type="checkbox" id="scanOcr"><div>ทำ OCR ภาษาไทย/อังกฤษ (PDF ค้นหาข้อความได้)<small>ต้องติดตั้งชุดภาษา OCR ใน NAPS2 ก่อน และใช้เวลานานขึ้น</small></div></label>
             <label class="check-row"><input type="checkbox" id="scanPatchT"><div>แยกเอกสารด้วยแผ่นคั่น Patch-T<small>ใส่แผ่นคั่นระหว่างเอกสาร ระบบจะแยกเป็นหลายไฟล์และบันทึกเป็นเอกสารแยกกันได้</small></div></label>
             <label class="check-row"><input type="checkbox" id="scanPdfa"><div>บันทึกเป็น PDF/A-2b<small>มาตรฐานสำหรับจัดเก็บเอกสารระยะยาว</small></div></label>

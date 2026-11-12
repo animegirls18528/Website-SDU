@@ -9,6 +9,7 @@ require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../config/helpers.php';
 require_once __DIR__ . '/../config/storage.php';
 require_once __DIR__ . '/../config/scanner.php';
+require_once __DIR__ . '/../config/scanner_detect.php';
 
 $jobId = (int)($argv[1] ?? 0);
 $stmt = $pdo->prepare("SELECT * FROM scan_jobs WHERE ID = ?");
@@ -47,6 +48,7 @@ $outAbs = absPath($outRel);
 
 $cmd = [
     NAPS2_CONSOLE_PATH,
+    '--noprofile',
     '-o', $outAbs,
     '--driver', $o['driver'],
     '--device', $o['device'],
@@ -57,42 +59,50 @@ $cmd = [
     '--force',
 ];
 if ($o['deskew']) $cmd[] = '--deskew';
-if ($o['skipBlank']) $cmd[] = '--excludeblank';
+// NAPS2 Console has no --excludeblank option; blank-page removal requires a GUI profile.
 if ($o['ocr'] && $o['format'] === 'pdf') { array_push($cmd, '--enableocr', '--ocrlang', SCAN_OCR_LANG); }
 if ($o['splitPatchT']) $cmd[] = '--splitpatcht';
-if ($o['pdfa'] && $o['format'] === 'pdf') { array_push($cmd, '--pdfcompat', 'PDF/A-2b'); }
+if ($o['pdfa'] && $o['format'] === 'pdf') { array_push($cmd, '--pdfcompat', 'A2-b'); }
 if (!empty($o['jpegQuality'])) { array_push($cmd, '--jpegquality', (string)$o['jpegQuality']); }
 
-$process = proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+$outLog = tempnam(sys_get_temp_dir(), 'scan_o');
+$errLog = tempnam(sys_get_temp_dir(), 'scan_e');
+if ($outLog === false || $errLog === false) {
+    if ($outLog !== false) @unlink($outLog);
+    if ($errLog !== false) @unlink($errLog);
+    finishJob($pdo, $jobId, 'failed', 'สร้างไฟล์ชั่วคราวสำหรับสแกนไม่ได้');
+    exit;
+}
+// PHP on Windows cannot reliably make anonymous pipes nonblocking. Use files so
+// a quiet driver cannot block fread() and prevent the timeout from being checked.
+$process = proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['file', $outLog, 'w'], 2 => ['file', $errLog, 'w']], $pipes);
 if (!is_resource($process)) {
+    @unlink($outLog);
+    @unlink($errLog);
     finishJob($pdo, $jobId, 'failed', 'ไม่สามารถเรียก NAPS2 Console ได้ - กรุณาตรวจสอบ path ของ NAPS2');
     exit;
 }
 fclose($pipes[0]);
-stream_set_blocking($pipes[1], false);
-stream_set_blocking($pipes[2], false);
 
 $stdout = $stderr = '';
 $start = time();
 $timedOut = false;
 while (true) {
-    $stdout .= (string)fread($pipes[1], 8192);
-    $stderr .= (string)fread($pipes[2], 8192);
     $status = proc_get_status($process);
     if (!$status['running']) break;
     if (time() - $start > SCAN_TIMEOUT) {
-        proc_terminate($process);
+        killProcessTree($process);
         $timedOut = true;
         break;
     }
     usleep(200000);
 }
-$stdout .= (string)stream_get_contents($pipes[1]);
-$stderr .= (string)stream_get_contents($pipes[2]);
-fclose($pipes[1]);
-fclose($pipes[2]);
 $exit = proc_close($process);
 if (isset($status['exitcode']) && $status['exitcode'] !== -1) $exit = $status['exitcode'];
+$stdout = (string)file_get_contents($outLog);
+$stderr = (string)file_get_contents($errLog);
+@unlink($outLog);
+@unlink($errLog);
 
 // Collect produced files
 $dir = dirname($outAbs);

@@ -11,22 +11,28 @@
 
 // Path to NAPS2 Console executable
 // ปรับ path ให้ตรงกับเครื่องที่ติดตั้ง
-define('NAPS2_CONSOLE_PATH', 'C:\\Program Files\\NAPS2\\NAPS2.Console.exe');
+if (is_file(__DIR__ . '/local.php')) require_once __DIR__ . '/local.php';
+if (!defined('NAPS2_CONSOLE_PATH')) {
+    $installed = 'C:\\Program Files\\NAPS2\\NAPS2.Console.exe';
+    $portable = __DIR__ . '/../tools/scanner-runtime/naps2/App/NAPS2.Console.exe';
+    define('NAPS2_CONSOLE_PATH', is_file($installed) ? $installed : $portable);
+}
 
 // Scanner device name (ตรงกับชื่อที่ปรากฏใน TWAIN driver)
 // ดูชื่อเครื่องได้จาก: NAPS2.Console.exe --listdevices --driver twain
-define('SCANNER_DEVICE_NAME', 'Canon DR-G2110 TWAIN');
+defined('SCANNER_DEVICE_NAME') || define('SCANNER_DEVICE_NAME', 'CANON DR-G2110');
+defined('SCANNER_DEFAULT_DRIVER') || define('SCANNER_DEFAULT_DRIVER', 'twain');
 
 // Default scan settings
 define('SCANNER_DEFAULTS', json_encode([
-    'driver'     => 'twain',     // twain, wia, escl (eSCL = network scanners)
+    'driver'     => SCANNER_DEFAULT_DRIVER, // twain, wia, escl
     'dpi'        => 300,         // 150, 200, 300, 400, 600
     'colorMode'  => 'color',     // color, gray, bw (black & white)
     'source'     => 'feeder',    // feeder (ADF), glass (flatbed), duplex
     'format'     => 'pdf',       // pdf, png, jpg, tiff
     'pageSize'   => 'a4',        // a4, letter, legal, a3
     'deskew'     => true,        // straighten skewed pages
-    'skipBlank'  => true,        // drop blank pages (e.g. empty back sides in duplex)
+    'skipBlank'  => false,       // NAPS2 Console does not expose blank-page removal
     'ocr'        => false,       // NAPS2 OCR -> searchable PDF (needs NAPS2 OCR language pack)
     'splitPatchT'=> false,       // split into separate documents at Patch-T separator sheets
     'pdfa'       => false,       // save as PDF/A-2b for long-term archiving
