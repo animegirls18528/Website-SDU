@@ -22,6 +22,9 @@ if (!defined('NAPS2_CONSOLE_PATH')) {
 // ดูชื่อเครื่องได้จาก: NAPS2.Console.exe --listdevices --driver twain
 defined('SCANNER_DEVICE_NAME') || define('SCANNER_DEVICE_NAME', 'CANON DR-G2110');
 defined('SCANNER_DEFAULT_DRIVER') || define('SCANNER_DEFAULT_DRIVER', 'twain');
+// A trusted, locally installed NAPS2 profile may select a compatible TWAIN DSM
+// (for example X64). Only used for the configured TWAIN device, never from input.
+defined('NAPS2_TWAIN_PROFILE') || define('NAPS2_TWAIN_PROFILE', '');
 
 // Default scan settings
 define('SCANNER_DEFAULTS', json_encode([

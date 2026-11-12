@@ -20,3 +20,6 @@ putenv('DB_PASS=');
 // define('SCANNER_DEFAULT_DRIVER', 'wia');
 // define('SCANNER_DEVICE_NAME', 'CANON DR-G2110 USB');
 // define('NAPS2_CONSOLE_PATH', 'C:\\Program Files\\NAPS2\\NAPS2.Console.exe');
+// Optional named NAPS2 profile for the configured TWAIN device (e.g. TwainImpl=X64).
+// Its processing settings should be off; the web request supplies DPI/color/deskew/OCR.
+// define('NAPS2_TWAIN_PROFILE', 'EDMS Canon TWAIN x64');

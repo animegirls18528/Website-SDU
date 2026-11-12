@@ -46,9 +46,13 @@ $base = newStoragePath('scan', $o['format']);
 $outRel = $multiFile ? preg_replace('#\.(\w+)$#', '_$(nnnn).$1', $base) : $base;
 $outAbs = absPath($outRel);
 
-$cmd = [
-    NAPS2_CONSOLE_PATH,
-    '--noprofile',
+$cmd = [NAPS2_CONSOLE_PATH];
+if ($o['driver'] === 'twain' && NAPS2_TWAIN_PROFILE !== '' && strcasecmp($o['device'], SCANNER_DEVICE_NAME) === 0) {
+    array_push($cmd, '--profile', NAPS2_TWAIN_PROFILE);
+} else {
+    $cmd[] = '--noprofile';
+}
+$cmd = array_merge($cmd, [
     '-o', $outAbs,
     '--driver', $o['driver'],
     '--device', $o['device'],
@@ -57,10 +61,11 @@ $cmd = [
     '--dpi', (string)$o['dpi'],
     '--bitdepth', $o['colorMode'],
     '--force',
-];
+]);
 if ($o['deskew']) $cmd[] = '--deskew';
 // NAPS2 Console has no --excludeblank option; blank-page removal requires a GUI profile.
 if ($o['ocr'] && $o['format'] === 'pdf') { array_push($cmd, '--enableocr', '--ocrlang', SCAN_OCR_LANG); }
+else $cmd[] = '--disableocr'; // Do not inherit OCR from a local profile.
 if ($o['splitPatchT']) $cmd[] = '--splitpatcht';
 if ($o['pdfa'] && $o['format'] === 'pdf') { array_push($cmd, '--pdfcompat', 'A2-b'); }
 if (!empty($o['jpegQuality'])) { array_push($cmd, '--jpegquality', (string)$o['jpegQuality']); }

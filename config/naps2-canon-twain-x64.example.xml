@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Add this profile to NAPS2's profiles.xml, or use as the profiles.xml for
+     a dedicated portable NAPS2 instance. The web supplies device/DPI/color/source. -->
+<ArrayOfScanProfile>
+  <ScanProfile>
+    <Version>2</Version>
+    <DisplayName>EDMS Canon TWAIN x64</DisplayName>
+    <DriverName>twain</DriverName>
+    <UseNativeUI>false</UseNativeUI>
+    <PaperSource>Feeder</PaperSource>
+    <BitDepth>Grayscale</BitDepth>
+    <PageSize>A4</PageSize>
+    <PageAlign>Center</PageAlign>
+    <Resolution>Dpi300</Resolution>
+    <AfterScanScale>OneToOne</AfterScanScale>
+    <Quality>75</Quality>
+    <AutoDeskew>false</AutoDeskew>
+    <ExcludeBlankPages>false</ExcludeBlankPages>
+    <TwainImpl>X64</TwainImpl>
+  </ScanProfile>
+</ArrayOfScanProfile>
