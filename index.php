@@ -466,6 +466,12 @@ $v = fn($f) => $f . '?v=' . @filemtime(__DIR__ . '/' . $f);
             </button>
           </div>
 
+          <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+            <button type="button" class="btn btn-outline" id="scan-preset-fast" onclick="App.Scanner.applySpeedPreset('fast')"><span class="material-icons-round" style="font-size:18px;">bolt</span> สแกนเร็ว · เทา 200 DPI</button>
+            <button type="button" class="btn btn-outline" id="scan-preset-standard" onclick="App.Scanner.applySpeedPreset('standard')">มาตรฐาน · สี 300 DPI</button>
+          </div>
+          <div class="doc-sub" style="margin-bottom:12px;">โหมดเร็วปิดการปรับเอียงและ OCR เหมาะกับเอกสารตัวหนังสือทั่วไป หากตัวหนังสือเล็กหรือต้องเก็บสี ให้ใช้มาตรฐาน 300 DPI</div>
+
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:8px;">
             <div class="form-group" style="margin:0; grid-column: span 2;">
               <label style="font-size:12.5px; color:var(--text-muted);">เครื่องสแกน</label>

@@ -1464,6 +1464,22 @@ App.Scanner = {
   jobId: null,
   pollTimer: null,
 
+  applySpeedPreset: function(name) {
+    const presets = {
+      fast: { dpi: 200, colorMode: 'gray', deskew: false, ocr: false, pdfa: false, jpegQuality: '60' },
+      standard: { dpi: 300, colorMode: 'color', deskew: true, ocr: false, pdfa: false, jpegQuality: '' },
+    };
+    const preset = presets[name];
+    if (!preset) return;
+    for (const [key, value] of Object.entries(preset)) {
+      const el = document.getElementById('scan' + key[0].toUpperCase() + key.slice(1));
+      if (!el) continue;
+      if (el.type === 'checkbox') el.checked = value;
+      else el.value = String(value);
+    }
+    App.toast(name === 'fast' ? 'ใช้โหมดเร็ว: เทา 200 DPI ปิดปรับเอียงและ OCR' : 'ใช้โหมดมาตรฐาน: สี 300 DPI พร้อมปรับเอียง', 'info');
+  },
+
   init: function() {
     App.DocForm.render('scan');
     this.staged.expectedPagesFn = () => parseInt(document.getElementById('scanExpected')?.value, 10) || null;
@@ -1578,7 +1594,8 @@ App.Scanner = {
         this.showProgress(false);
         if (res.status === 'done') {
           res.files.forEach(f => this.staged.add(f));
-          App.toast(`สแกนสำเร็จ ${res.files.length} ไฟล์`, 'success');
+          const elapsed = Number.isFinite(res.elapsedSeconds) ? ` · ใช้เวลาสแกน ${res.elapsedSeconds} วินาที` : '';
+          App.toast(`สแกนสำเร็จ ${res.files.length} ไฟล์${elapsed}`, 'success');
           if (res.split && res.files.length > 1) {
             const cb = document.getElementById('scanSplit');
             if (cb) cb.checked = true;

@@ -139,6 +139,7 @@ switch ($action) {
             $out['ahead'] = (int)$pdo->query("SELECT COUNT(*) FROM scan_jobs WHERE Status IN ('queued','running') AND ID < {$job['ID']}")->fetchColumn();
         }
         if ($job['Status'] === 'done') {
+            $out['elapsedSeconds'] = max(0, strtotime($job['FinishedAt']) - strtotime($job['StartedAt']));
             $opts = json_decode($job['Options'], true);
             $out['files'] = [];
             foreach (json_decode((string)$job['Files'], true) ?: [] as $i => $rel) {
